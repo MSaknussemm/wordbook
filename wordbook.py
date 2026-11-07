@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+__version__ = "1.1.0"
+
 import argparse
 import csv
 import io
@@ -445,15 +447,19 @@ def to_markdown(payload: dict, cfg: dict | None = None) -> str:
             "phonetic": phone_text, "examples": examples,
             "forms": forms, "exam": exam, "web": web, "time": stamp,
         }
-        filled = re.sub(r"\{\{(\w+)\}\}", lambda m: str(ctx.get(m.group(1).lower(), "")), template)
+        filled = re.sub(r"\{\{\s*(\w+)\s*\}\}", lambda m: str(ctx.get(m.group(1).lower(), "")), template)
         block = filled.rstrip()
         # 模板里没写 ## 标题时替它补上：判重、撤销、导出 Anki 都靠这个标记
         if not block.lstrip().startswith("## "):
             block = f"## {word}\n{block}"
         return block + "\n\n"
 
-    head = _meaning_line(payload, show_pos=bool(fields.get("pos", True)))
-    lines = [f"## {word}", head or "（词典没给释义）"]
+    head = ""
+    if fields.get("zh", True):
+        head = _meaning_line(payload, show_pos=bool(fields.get("pos", True)))
+    lines = [f"## {word}"]
+    if head:
+        lines.append(head)
 
     if fields.get("en") and en:
         lines.append(f"- **英文**：{en}")
@@ -520,35 +526,69 @@ def save_word(word: str, path: str | None = None) -> dict:
         count = len(re.findall(r"^##\s+\S", read_notes(path), re.MULTILINE))
         _cache.pop(word, None)   # 缓存里还留着 saved=False，不失效会让界面反复横跳
 
-        # 记住「写之前有多长」，撤销时截回这个位置
+        # 记住写之前/之后的长度和写进去的那一段：撤销时三者都要对得上才敢动
         _UNDO.clear()
-        _UNDO.update({"path": path, "size": size_before, "word": word})
+        _UNDO.update({
+            "path": path,
+            "size": size_before,
+            "word": word,
+            "block": block,
+            "after": os.path.getsize(path),
+        })
 
         return {"ok": True, "duplicate": False, "path": path, "count": count}
 
 
 def undo_last() -> dict:
-    """撤掉最近写入的那一条。只认最近一次，且文件没被别人动过。"""
+    """撤掉最近写入的那一条。
+
+    只认最近一次，而且必须同时满足：
+      - 文件当前长度 == 写完之后记录的长度（说明没人追加过）
+      - 文件尾巴 == 当时写进去的那一段（说明没被改过）
+    少一样就拒绝——宁可撤不掉，也不能把你自己后来加的词截掉。
+    """
     with _lock:
         if not _UNDO:
             return {"ok": False, "error": "没有可撤销的记录"}
         path = _UNDO.get("path") or NOTES_PATH
         size = int(_UNDO.get("size") or 0)
+        after = int(_UNDO.get("after") or 0)
         word = _UNDO.get("word") or ""
-        _UNDO.clear()
+        block = _UNDO.get("block") or ""
 
         if not os.path.exists(path):
+            _UNDO.clear()
             return {"ok": False, "error": "词表文件已经不在了"}
-        if size == 0:                      # 这次是新建的文件，撤销 = 删掉它
+
+        cur = os.path.getsize(path)
+        if cur != after:
+            _UNDO.clear()
+            return {"ok": False, "error": "词表在之后被改动过，撤销会误伤，已放弃"}
+
+        with open(path, "rb") as fh:
+            fh.seek(size)
+            tail = fh.read()
+        if tail != block.encode("utf-8"):
+            _UNDO.clear()
+            return {"ok": False, "error": "词表内容和记录对不上，撤销已放弃"}
+
+        _UNDO.clear()
+        with open(path, "r+b") as fh:
+            fh.truncate(size)
+
+        # 撤完只剩标题头的话，干脆把空文件收掉
+        # 注意：Windows 上文件还开着就删不掉，必须先读完、关掉、再删
+        only_header = False
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                only_header = (fh.read() == HEADER)
+        except OSError:
+            only_header = False
+        if only_header:
             try:
                 os.remove(path)
-            except OSError as exc:
-                return {"ok": False, "error": f"删除失败：{exc}"}
-        else:
-            if os.path.getsize(path) < size:
-                return {"ok": False, "error": "词表被别的程序改过，没敢动"}
-            with open(path, "r+b") as fh:
-                fh.truncate(size)
+            except OSError:
+                pass
 
         _cache.pop(word, None)
         count = 0
@@ -566,15 +606,29 @@ def export_anki_csv() -> bytes:
         if not lines:
             continue
         word = lines[0].strip()
-        meaning = " ".join(
-            l.strip() for l in lines[1:] if not l.strip().startswith("- **")
-        ).strip()
-        rows.append([word, meaning])
+
+        # 释义只取「第一条列表项之前」的内容；碰到 - **音标** 或  - 例句 就停，
+        # 否则例句会被整段塞进释义列
+        head_lines = []
+        for line in lines[1:]:
+            if line.strip().startswith("- "):
+                break
+            head_lines.append(line.strip())
+        meaning = " ".join(head_lines).strip()
+
+        rows.append([_csv_safe(word), _csv_safe(meaning)])
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(["单词", "释义"])
     writer.writerows(rows)
     return buf.getvalue().encode("utf-8-sig")
+
+
+def _csv_safe(value: str) -> str:
+    """防 Excel 把 = + - @ 开头的单元格当公式执行。"""
+    if value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 # --------------------------------------------------------------------------
@@ -799,11 +853,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/ping":
-            self._json(200, {"ok": True, "app": "wordbook"})
+            self._json(200, {"ok": True, "app": "wordbook", "version": __version__})
             return
 
         if route == "/api/config":
-            self._json(200, {"ok": True, "config": load_config(), "path": NOTES_PATH})
+            self._json(200, {
+                "ok": True,
+                "config": load_config(),
+                "path": NOTES_PATH,
+                "undo_available": bool(_UNDO),   # 刷新页面后按钮还能回来
+            })
             return
 
         if route == "/api/export-anki":
@@ -981,6 +1040,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="本地生词本（左侧查词，右侧释义，记进 Markdown）")
     parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
     parser.add_argument("--file", default=None, help="词表 Markdown 路径，默认是桌面上的 词表.md")
+    parser.add_argument("--version", action="version", version=f"wordbook {__version__}")
     parser.add_argument("--no-browser", action="store_true", help="别自动开浏览器")
     args = parser.parse_args()
 

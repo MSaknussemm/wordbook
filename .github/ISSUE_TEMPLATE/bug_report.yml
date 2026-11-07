@@ -1,0 +1,59 @@
+name: Bug 报告
+description: 有东西坏了 / 查不到词 / 服务起不来
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        贴之前先做两件事：
+
+        1. 双击 `启动词本(排错用).bat` 跑一遍，把黑窗口里的报错贴上来
+        2. 看看 `%LOCALAPPDATA%\Wordbook\` 下有没有 `port.txt`
+
+        如果是**安全问题**（能读/删你的数据、能被外部网页操控），请不要用这个表单，见 SECURITY.md。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 你做了什么、看到什么、期望什么
+      placeholder: |
+        1. 双击桌面图标
+        2. 输入 serendipity 回车
+        3. 右边一直显示"正在查…"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 运行 `python wordbook.py --version` 的输出
+      placeholder: wordbook 1.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: Windows 版本 / Python 版本 / 浏览器
+      placeholder: Windows 11 23H2 / Python 3.11.7 / Edge 131
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 报错或日志
+      description: 排错 bat 黑窗口里的内容，或浏览器 F12 控制台
+      render: text
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 自查
+      options:
+        - label: 我已经用「启动词本(排错用).bat」跑过一遍
+        - label: 我的问题是复现得出来的，不是偶发一次

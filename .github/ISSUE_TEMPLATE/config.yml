@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/MSaknussemm/wordbook/security/advisories/new
+    about: 能读/删数据、能被外部网页操控这类问题，请不要开公开 Issue
+  - name: 使用问题
+    url: https://github.com/MSaknussemm/wordbook/blob/main/使用说明.md
+    about: 先看使用说明，八成答案在里面

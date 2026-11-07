@@ -233,7 +233,7 @@
 <div class="sheet" id="sheet" hidden>
   <div class="sheet-box">
     <h2>记录设置</h2>
-    <p class="sheet-hint">只影响以后「记下」的词条，已经记好的不会改动。</p>
+    <p class="sheet-hint">只影响以后「记下」的词条，已经记好的不会改动。<br>「中文释义」和「英文原义」都关掉的话，词条就只剩单词一行。</p>
 
     <div class="presets">
       <button data-preset="min" type="button">极简</button>
@@ -559,7 +559,11 @@
     try {
       const resp = await fetch("/api/config");
       const data = await resp.json();
-      if (data.ok && data.config) cfg = data.config;
+      if (data.ok) {
+        if (data.config) cfg = data.config;
+        // 服务端还留着上一条的可撤销记录，刷新页面后按钮也能回来
+        if (typeof data.undo_available === "boolean") canUndo = data.undo_available;
+      }
     } catch (e) {}
   }
 
