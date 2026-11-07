@@ -418,7 +418,7 @@
       return;
     }
     words.forEach((w) => {
-      const li = el("li", saved.has(w) ? "saved" : null, w);
+      const li = el("li", saved.has(wkey(w)) ? "saved" : null, w);
       li.title = w;
       li.addEventListener("click", () => {
         input.value = w;
@@ -571,7 +571,7 @@
         toast(data.error || "?");
         return;
       }
-      const stillHere = current && current.word === target;
+      const stillHere = current && wkey(current.word) === wkey(target);
       if (data.duplicate) {
         if (stillHere) { btn.textContent = t("saved"); current.saved = true; }
         toast(t("dupToast"));
@@ -587,7 +587,7 @@
         if (ub) ub.hidden = false;
       }
       const saved = new Set(loadStored(SAVED_KEY));
-      saved.add(target);              // 记的是真正写进文件的那个词
+      saved.add(wkey(target));              // 记的是真正写进文件的那个词
       store(SAVED_KEY, [...saved]);
       renderRecent();
     } catch (err) {
@@ -611,8 +611,8 @@
       toast(t("undoDone", data.word));
       // 撤销后「最近查过」里的已保存标记也要一起清掉，否则刷新后还在骗人
       const saved = new Set(loadStored(SAVED_KEY));
-      if (saved.delete(data.word)) store(SAVED_KEY, [...saved]);
-      if (current && current.word === data.word) {
+      if (saved.delete(wkey(data.word))) store(SAVED_KEY, [...saved]);
+      if (current && wkey(current.word) === wkey(data.word)) {
         current.saved = false;
         render(current);
       }
@@ -737,16 +737,25 @@
     window.location.href = api("/api/export-anki");
   });
 
+  // 内部比较一律用小写：词典可能返回 London，撤销返回 london，严格比较会错位
+  function wkey(word) { return String(word || "").trim().toLowerCase(); }
+
   // ---------- 快捷键 ----------
   let recentIndex = -1;
   document.addEventListener("keydown", (ev) => {
+    const active = document.activeElement;
+    const tag = (active && active.tagName) || "";
+    const editing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!(active && active.isContentEditable);
+    const sheetOpen = !$("sheet").hidden;
+
+    if (ev.key !== "Escape" && (editing || sheetOpen)) return;   // 打字/设置面板里不抢键
+
     if (ev.ctrlKey && (ev.key === "d" || ev.key === "D")) {
       ev.preventDefault();
       const b = $("save");
       if (b && !b.disabled) b.click();
       return;
     }
-    if (document.activeElement === input) return;
     const words = loadStored(RECENT_KEY);
     if (!words.length) return;
     if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {

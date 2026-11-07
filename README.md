@@ -114,7 +114,7 @@ adj. 短暂的；（主指植物）短生的，短命的；n. 只生存一天的
 |---|---|
 | `桌面\词表.txt` | 你的词表（纯文本，随便备份） |
 | `%LOCALAPPDATA%\Wordbook\config.json` | 记录设置（字段 / 模板） |
-| `%LOCALAPPDATA%\Wordbook\port.txt` | 当前真实端口 |
+| `%LOCALAPPDATA%\Wordbook\port.txt` | 当前真实端口（每 5 秒重写，退不删） |
 
 删掉 `config.json` 即恢复默认（极简两行）。
 

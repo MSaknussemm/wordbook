@@ -375,6 +375,14 @@ class TestPort(unittest.TestCase):
             first.server_close()
 
 
+class TestSingleInstance(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows 命名互斥体")
+    def test_second_acquire_fails(self):
+        name = "Local\\WordbookTest-%d" % os.getpid()
+        self.assertTrue(wordbook.acquire_single_instance(name))
+        self.assertFalse(wordbook.acquire_single_instance(name), "第二个实例必须被挡住")
+
+
 class TestConfig(unittest.TestCase):
     def test_defaults_present(self):
         parsed = wordbook.load_config()

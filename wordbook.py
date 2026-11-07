@@ -69,6 +69,7 @@ _cache: dict[str, tuple[float, dict]] = {}
 # 快路径：SSE 连接数为 0 且心跳停了 FAST_EXIT_SEC 秒 -> 关标签，立刻走
 # 慢路径：不管有没有连接，心跳彻底停 SLOW_EXIT_SEC 秒 -> 兜住半开连接的僵尸
 _SERVER = None
+_INSTANCE_HANDLE = None   # 单实例互斥体句柄，进程活着就一直持有
 _SSE_CLIENTS = 0
 _SSE_LOCK = threading.Lock()
 _LAST_HEARTBEAT = 0.0
@@ -332,6 +333,31 @@ def lookup_wiktionary(word: str):
 # --------------------------------------------------------------------------
 # 合并 / 缓存
 # --------------------------------------------------------------------------
+
+def acquire_single_instance(name: str = "Local\\WordbookSingleton") -> bool:
+    """Windows 命名互斥体：同一时间只允许一个实例。
+
+    只对「没指定 --port」的常规启动生效——显式给端口是调试/测试行为，放行。
+    返回 False 表示已经有一个在跑了。
+    """
+    global _INSTANCE_HANDLE
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        handle = kernel32.CreateMutexW(None, False, name)
+        if not handle:
+            return True                       # 建不出来就放行，别把程序拦死
+        if ctypes.get_last_error() == 183:    # ERROR_ALREADY_EXISTS
+            return False
+        _INSTANCE_HANDLE = handle             # 持住引用，进程退出自动释放
+        return True
+    except Exception:
+        return True
+
 
 class LookupNetworkError(LookupError):
     """两个词典都是网络层失败——这跟「词典里没有这个词」是两回事。"""
@@ -871,13 +897,12 @@ def _write_port_file(port: int) -> None:
 
 
 def _clear_port_file(port: int) -> None:
-    try:
-        with open(PORT_FILE, "r", encoding="utf-8") as fh:
-            if fh.read().strip() != str(port):
-                return          # 不是自己写的，别乱删
-        os.remove(PORT_FILE)
-    except (OSError, ValueError):
-        pass
+    """兼容旧调用：现在退出时不再删纸条。
+
+    纸条是启动器找实例的唯一线索，删掉反而会让它多花几秒甚至开重。
+    失效的纸条会被 ping 校验挡掉，留着无害。
+    """
+    return
 
 
 def _track_client(delta: int) -> None:
@@ -896,13 +921,20 @@ def _graceful_shutdown(delay: float = 0.25) -> None:
             pass
 
 
-def _idle_watchdog(started: float) -> None:
+def _idle_watchdog(started: float, port: int) -> None:
     """双判据：快路径管关标签，慢路径管半开连接；另外处理睡眠与「生下来就没人连」。"""
     global _LAST_HEARTBEAT
     last_tick = time.time()
+    last_port_write = started
     while True:
         time.sleep(2)
         now = time.time()
+
+        # 纸条自愈：被清理或写失败时，最多 5 秒后重新写回来，
+        # 启动器就不会因为找不到线索而白开一份
+        if now - last_port_write > 5:
+            _write_port_file(port)
+            last_port_write = now
 
         # 一次 tick 跳了 10 秒以上 = 刚从睡眠/挂起回来。
         # 墙钟走了一大截，但页面其实一直开着，必须把心跳时间戳一起拨过来，
@@ -1218,7 +1250,7 @@ def main() -> None:
     global NOTES_PATH, _SERVER
 
     parser = argparse.ArgumentParser(description="本地生词本（左侧查词，右侧释义，记进 Markdown）")
-    parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
+    parser.add_argument("--port", type=int, default=None, help="监听端口，默认 8765；显式指定会跳过单实例保护")
     parser.add_argument("--file", default=None, help="词表 Markdown 路径，默认是桌面上的 词表.md")
     parser.add_argument("--version", action="version", version=f"wordbook {__version__}")
     parser.add_argument("--no-browser", action="store_true", help="别自动开浏览器")
@@ -1229,15 +1261,23 @@ def main() -> None:
 
     migrate_legacy_md(NOTES_PATH)
 
+    # 常规启动（没显式给端口）只允许一个实例：靠命名互斥体，
+    # 不依赖 port.txt 是否存在——那张纸条丢了也不会开出第二份
+    if args.port is None and not acquire_single_instance():
+        print("生词本已经在跑了；要再开一份调试，请加 --port <端口>。")
+        return
+
+    base_port = args.port if args.port is not None else 8765
+
     if not os.path.exists(INDEX_HTML):
         raise SystemExit(f"缺少 index.html，得跟 wordbook.py 放一起：{INDEX_HTML}")
 
-    port = pick_port(args.port)
+    port = pick_port(base_port)
     url = f"http://127.0.0.1:{port}/"
     httpd = Server(("127.0.0.1", port), Handler)
     _SERVER = httpd
     _write_port_file(port)
-    threading.Thread(target=_idle_watchdog, args=(time.time(),), daemon=True).start()
+    threading.Thread(target=_idle_watchdog, args=(time.time(), port), daemon=True).start()
 
     print("生词本已启动：", url)
     print("词表文件：", NOTES_PATH)
