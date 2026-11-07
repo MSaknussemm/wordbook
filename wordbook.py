@@ -31,6 +31,22 @@ import webbrowser
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+
+def _safe_streams() -> None:
+    """让 stdout/stderr 遇到编不了的字符时替换，而不是抛异常。
+
+    英文版 Windows 的控制台是 cp1252，直接 print 中文会 UnicodeEncodeError；
+    pythonw 下这两个流是 None，也要跳过。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
+_safe_streams()
+
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -1165,12 +1181,6 @@ def main() -> None:
         NOTES_PATH = os.path.abspath(args.file)
 
     migrate_legacy_md(NOTES_PATH)
-
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
 
     if not os.path.exists(INDEX_HTML):
         raise SystemExit(f"缺少 index.html，得跟 wordbook.py 放一起：{INDEX_HTML}")

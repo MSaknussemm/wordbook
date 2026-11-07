@@ -218,8 +218,10 @@ class TestMigration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             md = os.path.join(d, "词表.md")
             txt = os.path.join(d, "词表.txt")
-            open(md, "w", encoding="utf-8").write("## old\nv. 旧\n")
-            open(txt, "w", encoding="utf-8").write("new\nn. 新\n")
+            with open(md, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("## old\nv. 旧\n")
+            with open(txt, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("new\nn. 新\n")
             wordbook.migrate_legacy_md(txt)
             with open(txt, encoding="utf-8") as fh:
                 self.assertIn("new", fh.read())
