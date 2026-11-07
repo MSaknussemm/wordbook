@@ -11,7 +11,9 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#环境)
 
-![界面截图](assets/screenshot.png)
+| 中文界面 | English UI |
+|---|---|
+| ![中文界面](assets/screenshot.png) | ![English UI](assets/screenshot-en.png) |
 
 ---
 
@@ -30,6 +32,7 @@
 | | |
 |---|---|
 | **两行，默认克制** | 第一行单词，第二行「词性 + 意思」。音标、例句这些东西默认**不出现** |
+| **中英双语界面** | 设置里切「跟随系统 / 中文 / English」，即时生效；**词表里的标签**也跟着变 |
 | **双词典源** | 先问有道（中文释义），失败或未收录时自动退回 Wiktionary（英文） |
 | **记录可调** | 三档预设（极简 / 学习卡 / 全量）+ 逐项勾选 + `{{word}} {{pos}} {{zh}} …` 自定义模板 |
 | **不重复** | 同一个词只记一次，重复点会提示「已在词表里」 |
@@ -71,7 +74,7 @@ python wordbook.py --file "D:\notes\我的生词.md"
 | `Ctrl + D` | 记下当前词 |
 | `↑` / `↓` | 光标不在输入框时，翻「最近查过」 |
 | `Esc` | 清空输入框 |
-| `⚙ 记录设置` | 选字段 / 自定义模板 |
+| `⚙ 记录设置` | 选字段 / 模板 / **界面语言** |
 | `撤销上一条` | 撤掉刚记的那条 |
 | `打开词表` | 用系统默认程序打开 `词表.md` |
 | `导出 Anki` | 下载 CSV |

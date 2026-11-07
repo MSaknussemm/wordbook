@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import argparse
 import csv
@@ -415,11 +415,12 @@ def _examples_text(payload: dict, limit: int = 3) -> str:
     return "\n".join(out)
 
 
-def to_markdown(payload: dict, cfg: dict | None = None) -> str:
+def to_markdown(payload: dict, cfg: dict | None = None, lang: str = "zh") -> str:
     """按配置拼词条。默认仍然是两行：单词 +「词性 意思」。"""
     cfg = cfg or load_config()
     fields = cfg.get("fields") or {}
     template = (cfg.get("template") or "").strip()
+    lab = LABELS.get(lang, LABELS["zh"])
 
     word = payload.get("word") or ""
     pos, zh, en = _split_meaning(payload)
@@ -462,27 +463,24 @@ def to_markdown(payload: dict, cfg: dict | None = None) -> str:
         lines.append(head)
 
     if fields.get("en") and en:
-        lines.append(f"- **英文**：{en}")
+        lines.append(f"- **{lab['en']}**：{en}")
     if fields.get("phonetic") and phone_text:
-        lines.append(f"- **音标**：{phone_text}")
+        lines.append(f"- **{lab['phonetic']}**：{phone_text}")
     if fields.get("examples") and examples:
-        lines.append("- **例句**：")
+        lines.append(f"- **{lab['examples']}**：")
         lines.extend("  " + line for line in examples.splitlines())
     if fields.get("forms") and forms:
-        lines.append(f"- **变形**：{forms}")
+        lines.append(f"- **{lab['forms']}**：{forms}")
     if fields.get("exam") and exam:
-        lines.append(f"- **考试**：{exam}")
+        lines.append(f"- **{lab['exam']}**：{exam}")
     if fields.get("web") and web:
-        lines.append(f"- **网络释义**：{web}")
+        lines.append(f"- **{lab['web']}**：{web}")
     if fields.get("time"):
-        lines.append(f"- **收录**：{stamp}")
+        lines.append(f"- **{lab['time']}**：{stamp}")
     return "\n".join(lines) + "\n\n"
 
 
-HEADER = (
-    "# 生词本\n\n"
-    "> 一行单词，一行词性和意思。\n\n"
-)
+
 
 
 def read_notes(path: str) -> str:
@@ -501,7 +499,7 @@ def is_saved(word: str, path: str | None = None) -> bool:
     return bool(pattern.search(text))
 
 
-def save_word(word: str, path: str | None = None) -> dict:
+def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
     path = path or NOTES_PATH
     word = normalize_word(word)
     with _lock:
@@ -509,14 +507,15 @@ def save_word(word: str, path: str | None = None) -> dict:
             return {"ok": True, "duplicate": True, "path": path}
 
         payload = lookup(word)
-        block = to_markdown(payload, load_config())
+        block = to_markdown(payload, load_config(), lang=lang)
+        header = HEADERS.get(lang, HEADERS["zh"])
 
         new_file = not os.path.exists(path)
         # 新建文件时，撤销点要落在「标题头之后」，否则会把整个文件删掉
-        size_before = len(HEADER.encode("utf-8")) if new_file else os.path.getsize(path)
+        size_before = len(header.encode("utf-8")) if new_file else os.path.getsize(path)
         with open(path, "a", encoding="utf-8", newline="\n") as fh:
             if new_file:
-                fh.write(HEADER)
+                fh.write(header)
             else:
                 existing = read_notes(path)
                 if existing and not existing.endswith("\n"):
@@ -539,7 +538,7 @@ def save_word(word: str, path: str | None = None) -> dict:
         return {"ok": True, "duplicate": False, "path": path, "count": count}
 
 
-def undo_last() -> dict:
+def undo_last(lang: str = "zh") -> dict:
     """撤掉最近写入的那一条。
 
     只认最近一次，而且必须同时满足：
@@ -549,7 +548,7 @@ def undo_last() -> dict:
     """
     with _lock:
         if not _UNDO:
-            return {"ok": False, "error": "没有可撤销的记录"}
+            return {"ok": False, "code": "undo_none", "error": message("undo_none", lang)}
         path = _UNDO.get("path") or NOTES_PATH
         size = int(_UNDO.get("size") or 0)
         after = int(_UNDO.get("after") or 0)
@@ -558,19 +557,19 @@ def undo_last() -> dict:
 
         if not os.path.exists(path):
             _UNDO.clear()
-            return {"ok": False, "error": "词表文件已经不在了"}
+            return {"ok": False, "code": "undo_gone", "error": message("undo_gone", lang)}
 
         cur = os.path.getsize(path)
         if cur != after:
             _UNDO.clear()
-            return {"ok": False, "error": "词表在之后被改动过，撤销会误伤，已放弃"}
+            return {"ok": False, "code": "undo_changed", "error": message("undo_changed", lang)}
 
         with open(path, "rb") as fh:
             fh.seek(size)
             tail = fh.read()
         if tail != block.encode("utf-8"):
             _UNDO.clear()
-            return {"ok": False, "error": "词表内容和记录对不上，撤销已放弃"}
+            return {"ok": False, "code": "undo_mismatch", "error": message("undo_mismatch", lang)}
 
         _UNDO.clear()
         with open(path, "r+b") as fh:
@@ -581,7 +580,7 @@ def undo_last() -> dict:
         only_header = False
         try:
             with open(path, "r", encoding="utf-8") as fh:
-                only_header = (fh.read() == HEADER)
+                only_header = fh.read() in HEADERS.values()
         except OSError:
             only_header = False
         if only_header:
@@ -678,7 +677,7 @@ DEFAULT_FIELDS = {
     "time": False,
 }
 
-DEFAULT_CONFIG = {"fields": dict(DEFAULT_FIELDS), "template": ""}
+DEFAULT_CONFIG = {"fields": dict(DEFAULT_FIELDS), "template": "", "lang": "auto"}
 
 
 def load_config() -> dict:
@@ -697,6 +696,8 @@ def load_config() -> dict:
                 cfg["fields"][key] = bool(fields[key])
     if isinstance(data.get("template"), str):
         cfg["template"] = data["template"]
+    if data.get("lang") in ("auto", "zh", "en"):
+        cfg["lang"] = data["lang"]
     return cfg
 
 
@@ -704,7 +705,11 @@ def save_config(cfg: dict) -> None:
     fields = {}
     for key, default in DEFAULT_FIELDS.items():
         fields[key] = bool(((cfg.get("fields") or {}).get(key, default)))
-    clean = {"fields": fields, "template": str(cfg.get("template") or "")}
+    clean = {
+        "fields": fields,
+        "template": str(cfg.get("template") or ""),
+        "lang": cfg.get("lang") if cfg.get("lang") in ("auto", "zh", "en") else "auto",
+    }
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
         json.dump(clean, fh, ensure_ascii=False, indent=2)
@@ -712,6 +717,76 @@ def save_config(cfg: dict) -> None:
 
 # 撤销只保留「最近一次」，够用又不惹事
 _UNDO: dict = {}
+
+
+# 词条里这些标签会跟着界面语言变
+LABELS = {
+    "zh": {
+        "en": "英文", "phonetic": "音标", "examples": "例句",
+        "forms": "变形", "exam": "考试", "web": "网络释义", "time": "收录",
+        "none": "（词典没给释义）",
+    },
+    "en": {
+        "en": "English", "phonetic": "Phonetic", "examples": "Examples",
+        "forms": "Forms", "exam": "Exam", "web": "Web", "time": "Added",
+        "none": "(no definition from the dictionary)",
+    },
+}
+
+HEADERS = {
+    "zh": "# 生词本\n\n> 一行单词，一行词性和意思。\n\n",
+    "en": "# Wordbook\n\n> One line for the word, one for its part of speech and meaning.\n\n",
+}
+
+HEADER = HEADERS["zh"]      # 兼容旧代码与测试
+
+# 给前端用的错误文案（英文界面下不要弹中文）
+MESSAGES = {
+    "zh": {
+        "empty": "先输入一个单词",
+        "bad_word": "只认单词或短语，别塞奇怪字符",
+        "not_found": "两个词典都没收录",
+        "cross_site": "拒绝跨站请求",
+        "no_api": "没这个接口",
+        "bad_json": "请求体不是 JSON",
+        "save_failed": "写入失败",
+        "open_failed": "打不开词表",
+        "undo_none": "没有可撤销的记录",
+        "undo_changed": "词表在之后被改动过，撤销会误伤，已放弃",
+        "undo_mismatch": "词表内容和记录对不上，撤销已放弃",
+        "undo_gone": "词表文件已经不在了",
+        "dup": "这个词已经在词表里了",
+        "cfg_failed": "保存设置失败",
+    },
+    "en": {
+        "empty": "Type a word first",
+        "bad_word": "Only words or short phrases, please",
+        "not_found": "Neither dictionary has this word",
+        "cross_site": "Cross-site request rejected",
+        "no_api": "No such endpoint",
+        "bad_json": "Request body is not JSON",
+        "save_failed": "Could not write the file",
+        "open_failed": "Could not open the notes",
+        "undo_none": "Nothing to undo",
+        "undo_changed": "The notes changed after saving, so undo refused",
+        "undo_mismatch": "The notes do not match the last write, so undo refused",
+        "undo_gone": "The notes file is gone",
+        "dup": "Already in the word list",
+        "cfg_failed": "Could not save settings",
+    },
+}
+
+
+def message(key: str, lang: str = "zh") -> str:
+    return MESSAGES.get(lang, MESSAGES["zh"]).get(key) or MESSAGES["zh"].get(key, key)
+
+
+def resolve_lang(query_lang: str | None, accept: str | None, cfg: dict | None = None) -> str:
+    """优先级：?lang= > Accept-Language > 配置 > 中文。"""
+    for candidate in (query_lang, (accept or "").split(",")[0].split("-")[0], (cfg or {}).get("lang")):
+        if candidate in ("zh", "en"):
+            return candidate
+    return "zh"
 
 
 def _write_port_file(port: int) -> None:
@@ -877,19 +952,21 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/lookup":
+            lang = self._lang()
             params = urllib.parse.parse_qs(parsed.query)
             raw = (params.get("word") or [""])[0]
             word = normalize_word(raw)
             if not word:
-                self._json(400, {"ok": False, "error": "先输入一个单词"})
+                self._json(400, {"ok": False, "code": "empty", "error": message("empty", lang)})
                 return
             if not WORD_RE.match(word):
-                self._json(400, {"ok": False, "error": "只认英文单词/短语，别塞奇怪字符"})
+                self._json(400, {"ok": False, "code": "bad_word", "error": message("bad_word", lang)})
                 return
             try:
                 payload = lookup(word)
             except LookupError as exc:
-                self._json(404, {"ok": False, "error": str(exc)})
+                self._json(404, {"ok": False, "code": "not_found",
+                                 "error": message("not_found", lang), "detail": str(exc)})
                 return
             except Exception as exc:
                 self._json(502, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
@@ -913,6 +990,15 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(404, {"ok": False, "error": "没这个页面"})
 
+    def _lang(self) -> str:
+        """?lang= 优先，其次 Accept-Language，最后配置文件。"""
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        return resolve_lang(
+            (query.get("lang") or [None])[0],
+            self.headers.get("Accept-Language"),
+            load_config(),
+        )
+
     def _same_site(self) -> bool:
         """挡跨站 POST，也挡 DNS rebinding：Host 必须字面是本机。"""
         port = self.server.server_port
@@ -935,7 +1021,8 @@ class Handler(BaseHTTPRequestHandler):
         route = urllib.parse.urlparse(self.path).path
 
         if not self._same_site():
-            self._json(403, {"ok": False, "error": "拒绝跨站请求"})
+            self._json(403, {"ok": False, "code": "cross_site",
+                             "error": message("cross_site", self._lang())})
             return
 
         if route == "/api/heartbeat":
@@ -950,56 +1037,63 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/config":
+            lang = self._lang()
             try:
                 length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(length) if length else b"{}"
                 payload = json.loads(raw.decode("utf-8", "replace") or "{}")
                 save_config(payload if isinstance(payload, dict) else {})
             except json.JSONDecodeError:
-                self._json(400, {"ok": False, "error": "请求体不是 JSON"})
+                self._json(400, {"ok": False, "code": "bad_json", "error": message("bad_json", lang)})
                 return
             except OSError as exc:
-                self._json(500, {"ok": False, "error": f"保存配置失败：{exc}"})
+                self._json(500, {"ok": False, "code": "cfg_failed",
+                                 "error": f"{message('cfg_failed', lang)}: {exc}"})
                 return
             self._json(200, {"ok": True, "config": load_config()})
             return
 
         if route == "/api/undo":
-            self._json(200, undo_last())
+            self._json(200, undo_last(self._lang()))
             return
 
         if route == "/api/open-notes":
+            lang = self._lang()
             try:
                 os.startfile(NOTES_PATH)      # 只有 Windows 有这个
             except Exception as exc:
-                self._json(500, {"ok": False, "error": str(exc)})
+                self._json(500, {"ok": False, "code": "open_failed",
+                                 "error": f"{message('open_failed', lang)}: {exc}"})
                 return
             self._json(200, {"ok": True})
             return
 
         if route != "/api/save":
-            self._json(404, {"ok": False, "error": "没这个接口"})
+            self._json(404, {"ok": False, "code": "no_api", "error": message("no_api", self._lang())})
             return
 
+        lang = self._lang()
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw.decode("utf-8", "replace") or "{}")
         except json.JSONDecodeError:
-            self._json(400, {"ok": False, "error": "请求体不是 JSON"})
+            self._json(400, {"ok": False, "code": "bad_json", "error": message("bad_json", lang)})
             return
 
         word = normalize_word(body.get("word") or "")
         if not word or not WORD_RE.match(word):
-            self._json(400, {"ok": False, "error": "单词不合法"})
+            self._json(400, {"ok": False, "code": "bad_word", "error": message("bad_word", lang)})
             return
 
         try:
-            self._json(200, save_word(word))
+            self._json(200, save_word(word, lang=lang))
         except LookupError as exc:
-            self._json(404, {"ok": False, "error": f"词典查不到，没写盘：{exc}"})
+            self._json(404, {"ok": False, "code": "not_found",
+                             "error": message("not_found", lang), "detail": str(exc)})
         except OSError as exc:
-            self._json(500, {"ok": False, "error": f"写文件失败：{exc}"})
+            self._json(500, {"ok": False, "code": "save_failed",
+                             "error": f"{message('save_failed', lang)}: {exc}"})
         except Exception as exc:
             self._json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
 

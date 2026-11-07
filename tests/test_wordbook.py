@@ -267,5 +267,46 @@ class TestConfig(unittest.TestCase):
                 wordbook.CONFIG_PATH = old
 
 
+class TestI18n(unittest.TestCase):
+    def test_label_sets_differ(self):
+        self.assertEqual(wordbook.LABELS["zh"]["phonetic"], "音标")
+        self.assertEqual(wordbook.LABELS["en"]["phonetic"], "Phonetic")
+
+    def test_headers_are_localized(self):
+        self.assertTrue(wordbook.HEADERS["zh"].startswith("# 生词本"))
+        self.assertTrue(wordbook.HEADERS["en"].startswith("# Wordbook"))
+        self.assertEqual(wordbook.HEADER, wordbook.HEADERS["zh"])
+
+    def test_markdown_labels_follow_lang(self):
+        out = wordbook.to_markdown(PAYLOAD, cfg(phonetic=True), lang="en")
+        self.assertIn("- **Phonetic**：", out)
+        out_zh = wordbook.to_markdown(PAYLOAD, cfg(phonetic=True), lang="zh")
+        self.assertIn("- **音标**：", out_zh)
+
+    def test_resolve_lang_priority(self):
+        self.assertEqual(wordbook.resolve_lang("en", "zh-CN", {"lang": "zh"}), "en")
+        self.assertEqual(wordbook.resolve_lang(None, "en-US,en;q=0.9", {"lang": "zh"}), "en")
+        self.assertEqual(wordbook.resolve_lang(None, None, {"lang": "zh"}), "zh")
+        self.assertEqual(wordbook.resolve_lang(None, None, None), "zh")
+        self.assertEqual(wordbook.resolve_lang("xx", None, None), "zh")
+
+    def test_messages_localized(self):
+        self.assertIn("Neither dictionary", wordbook.message("not_found", "en"))
+        self.assertIn("两个词典", wordbook.message("not_found", "zh"))
+        self.assertEqual(wordbook.message("unknown_key", "en"), "unknown_key")
+
+    def test_config_roundtrips_lang(self):
+        old = wordbook.CONFIG_PATH
+        with tempfile.TemporaryDirectory() as d:
+            wordbook.CONFIG_PATH = os.path.join(d, "config.json")
+            try:
+                wordbook.save_config({"fields": {}, "template": "", "lang": "en"})
+                self.assertEqual(wordbook.load_config()["lang"], "en")
+                wordbook.save_config({"fields": {}, "template": "", "lang": "bogus"})
+                self.assertEqual(wordbook.load_config()["lang"], "auto")
+            finally:
+                wordbook.CONFIG_PATH = old
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

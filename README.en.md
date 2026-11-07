@@ -11,7 +11,9 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#requirements)
 
-![screenshot](assets/screenshot.png)
+| English UI | 中文界面 |
+|---|---|
+| ![English UI](assets/screenshot-en.png) | ![中文界面](assets/screenshot.png) |
 
 ---
 
@@ -32,6 +34,7 @@ No account, no sync, no spaced repetition, no recommendations. Just a lookup box
 | | |
 |---|---|
 | **Two lines, by default** | Word on line one, part of speech + meaning on line two. Phonetics and examples stay hidden unless you ask |
+| **Bilingual UI** | Switch between Follow system / 中文 / English in settings; the **labels inside the Markdown file** follow too |
 | **Two dictionary sources** | Youdao (Chinese) first, falling back to Wiktionary (English) when it fails or misses the word |
 | **Configurable entries** | Three presets (minimal / study card / everything), per-field checkboxes, or a `{{word}} {{pos}} {{zh}} …` template |
 | **Deduplicated** | A word is only recorded once |
@@ -75,7 +78,7 @@ The file name is configurable but the UI strings are Chinese; if you want an Eng
 | `Ctrl + D` | Save the current word |
 | `↑` / `↓` | Cycle through recent lookups (when the input is not focused) |
 | `Esc` | Clear the input |
-| `⚙` | Entry settings: fields and template |
+| `⚙` | Entry settings: fields, template and **interface language** |
 | `撤销上一条` | Undo the last saved entry |
 | `打开词表` | Open the Markdown file |
 | `导出 Anki` | Download the CSV |
