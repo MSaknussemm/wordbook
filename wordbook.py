@@ -1,0 +1,1023 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""wordbook.py —— 本地生词本
+
+左侧输入英文单词 -> 右侧显示「词性 + 意思」-> 点「记下」追加到桌面上的 词表.md。
+
+只用 Python 3 标准库。日常由 启动词本.vbs 无窗口拉起：
+    - 真实端口写进 %LOCALAPPDATA%\\Wordbook\\port.txt，启动器读它打开页面
+    - 页面关掉 15 秒（或心跳停 90 秒 / 启动后 60 秒没人连）就自己退出
+手动排错时用： python wordbook.py   （会有黑窗口，能看到报错）
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import os
+import re
+import socket
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from collections import defaultdict
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+INDEX_HTML = os.path.join(HERE, "index.html")
+
+WORD_RE = re.compile(r"^[A-Za-z][A-Za-z'\- ]{0,47}$")
+TAG_RE = re.compile(r"<[^>]+>")
+WS_RE = re.compile(r"\s+")
+
+NET_TIMEOUT = 12
+CACHE_TTL = 900  # 秒；同一个词 15 分钟内不重复打接口
+
+_lock = threading.Lock()
+_cache: dict[str, tuple[float, dict]] = {}
+
+# ---- 「页面还在不在了」判据（双保险）--------------------------------------
+# 快路径：SSE 连接数为 0 且心跳停了 FAST_EXIT_SEC 秒 -> 关标签，立刻走
+# 慢路径：不管有没有连接，心跳彻底停 SLOW_EXIT_SEC 秒 -> 兜住半开连接的僵尸
+_SERVER = None
+_SSE_CLIENTS = 0
+_SSE_LOCK = threading.Lock()
+_LAST_HEARTBEAT = 0.0
+FAST_EXIT_SEC = 15
+SLOW_EXIT_SEC = 90
+
+
+# --------------------------------------------------------------------------
+# 小工具
+# --------------------------------------------------------------------------
+
+def clean(text) -> str:
+    """去 HTML 标签、还原实体、压空白。"""
+    if text is None:
+        return ""
+    if not isinstance(text, str):
+        text = str(text)
+    text = TAG_RE.sub("", text)
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+    )
+    return WS_RE.sub(" ", text).strip()
+
+
+def clip(text: str, limit: int) -> str:
+    """截断长释义，免得一行糊成一片。"""
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def as_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def fetch_json(url: str, timeout: int = NET_TIMEOUT):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": UA,
+            "Accept": "application/json, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    return json.loads(raw.decode("utf-8", "replace"))
+
+
+def normalize_word(word: str) -> str:
+    word = (word or "").strip()
+    return WS_RE.sub(" ", word).lower()
+
+
+# --------------------------------------------------------------------------
+# 词典源 1：有道公开 JSON（中文释义 + 柯林斯例句 + 发音）
+# --------------------------------------------------------------------------
+
+def lookup_youdao(word: str):
+    query = urllib.parse.quote(word)
+    url = f"https://dict.youdao.com/jsonapi_s?doctype=json&jsonversion=4&q={query}"
+    data = fetch_json(url)
+
+    ec = data.get("ec") or {}
+    ec_word = ec.get("word") or {}
+    trs = as_list(ec_word.get("trs"))
+
+    simple = (data.get("simple") or {}).get("word") or []
+    simple_word = simple[0] if simple else {}
+
+    uk = clean(ec_word.get("ukphone") or simple_word.get("ukphone"))
+    us = clean(ec_word.get("usphone") or simple_word.get("usphone"))
+
+    entries = []
+    for item in trs:
+        if not isinstance(item, dict):
+            continue
+        zh = clean(item.get("tran"))
+        if zh:
+            entries.append({"pos": clean(item.get("pos")), "zh": zh, "en": ""})
+
+    # ee = WordNet 英文释义
+    en_entries = []
+    ee_word = (data.get("ee") or {}).get("word") or {}
+    for grp in as_list(ee_word.get("trs")):
+        if not isinstance(grp, dict):
+            continue
+        pos = clean(grp.get("pos"))
+        for tr in as_list(grp.get("tr")):
+            if not isinstance(tr, dict):
+                continue
+            en = clip(clean(tr.get("tran")), 220)
+            if en:
+                en_entries.append({"pos": pos, "zh": "", "en": en})
+
+    # 英文义按词性挂到中文义后面
+    en_by_pos = defaultdict(list)
+    for item in en_entries:
+        en_by_pos[item["pos"]].append(item["en"])
+    for item in entries:
+        bucket = en_by_pos.get(item["pos"])
+        if bucket:
+            item["en"] = bucket.pop(0)
+    # 中文义已经覆盖的场合，英文义只补两条；没有中文义时（Wiktionary 兜底）多给几条
+    extra_cap = 2 if entries else 5
+    extra = 0
+    for pos, leftovers in en_by_pos.items():
+        for en in leftovers:
+            if extra >= extra_cap:
+                break
+            entries.append({"pos": pos, "zh": "", "en": en})
+            extra += 1
+
+    # 例句：优先带中文翻译的（blng_sents_part），再退回 expand_ec
+    examples = []
+    pairs = (data.get("blng_sents_part") or {}).get("sentence-pair")
+    if isinstance(pairs, dict):
+        pairs = [pairs]
+    for pair in as_list(pairs):
+        if not isinstance(pair, dict):
+            continue
+        en = clean(pair.get("sentence"))
+        zh = clean(pair.get("sentence-translation"))
+        if en:
+            examples.append({"en": en, "zh": zh})
+        if len(examples) >= 3:
+            break
+
+    if not examples:
+        for wob in as_list((data.get("expand_ec") or {}).get("word")):
+            if not isinstance(wob, dict):
+                continue
+            for tl in as_list(wob.get("transList")):
+                content = (tl or {}).get("content") or {}
+                for sent in as_list(content.get("sents")):
+                    if not isinstance(sent, dict):
+                        continue
+                    en = clean(sent.get("sentOrig"))
+                    zh = clean(sent.get("sentTrans"))
+                    if en:
+                        examples.append({"en": en, "zh": zh})
+                    if len(examples) >= 3:
+                        break
+                if len(examples) >= 3:
+                    break
+
+    # 变形
+    forms = []
+    for rel in as_list((data.get("rel_word") or {}).get("rels")):
+        rel_body = (rel or {}).get("rel") or {}
+        pos = clean(rel_body.get("pos"))
+        for item in as_list(rel_body.get("words")):
+            if not isinstance(item, dict):
+                continue
+            w = clean(item.get("word"))
+            t = clean(item.get("tran"))
+            if w:
+                forms.append(f"{pos} {w}" + (f"（{t}）" if t else ""))
+    for wob in as_list((data.get("expand_ec") or {}).get("word")):
+        for wf in as_list((wob or {}).get("wfs")):
+            if isinstance(wf, dict) and wf.get("name") and wf.get("value"):
+                forms.append(f"{clean(wf['name'])} {clean(wf['value'])}")
+
+    # 考试标签
+    exam = []
+    for tag in as_list(ec.get("exam_type")):
+        t = clean(tag)
+        if t and t not in exam:
+            exam.append(t)
+    for wob in as_list((data.get("expand_ec") or {}).get("word")):
+        for tl in as_list((wob or {}).get("transList")):
+            for et in as_list(((tl or {}).get("content") or {}).get("examType")):
+                if isinstance(et, dict):
+                    t = clean(et.get("en") or et.get("zh"))
+                    if t and t not in exam:
+                        exam.append(t)
+
+    # 网络释义（备胎，主释义缺失时才用）
+    web = []
+    for item in as_list(ec.get("web_trans")):
+        if isinstance(item, str):
+            t = clean(item)
+        elif isinstance(item, dict):
+            t = clean(item.get("value") or "")
+        else:
+            t = ""
+        if t and t not in web:
+            web.append(t)
+
+    if not (entries or examples or uk or us):
+        return None
+
+    return {
+        "word": clean(ec_word.get("return-phrase") or simple_word.get("return-phrase") or word),
+        "uk": uk,
+        "us": us,
+        "phonetic": "",
+        "entries": entries,
+        "examples": examples,
+        "forms": forms,
+        "exam": exam,
+        "web": web[:4],
+        "source": "youdao",
+    }
+
+
+# --------------------------------------------------------------------------
+# 词典源 2：dictionaryapi.dev（Wiktionary，纯英文）—— 有道挂了时候的备胎
+# --------------------------------------------------------------------------
+
+def lookup_wiktionary(word: str):
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{urllib.parse.quote(word)}"
+    data = fetch_json(url)
+    if not isinstance(data, list) or not data:
+        return None
+
+    head = data[0] if isinstance(data[0], dict) else {}
+    phonetic = clean(head.get("phonetic"))
+
+    entries = []
+    examples = []
+    for block in data:
+        if not isinstance(block, dict):
+            continue
+        for meaning in as_list(block.get("meanings")):
+            pos = clean((meaning or {}).get("partOfSpeech"))
+            for d in as_list((meaning or {}).get("definitions"))[:4]:
+                if not isinstance(d, dict):
+                    continue
+                en = clean(d.get("definition"))
+                if en:
+                    entries.append({"pos": pos, "zh": "", "en": en})
+                ex = clean(d.get("example"))
+                if ex and len(examples) < 3:
+                    examples.append({"en": ex, "zh": ""})
+
+    if not entries:
+        return None
+
+    return {
+        "word": clean(head.get("word") or word),
+        "uk": "",
+        "us": "",
+        "phonetic": phonetic,
+        "entries": entries,
+        "examples": examples,
+        "forms": [],
+        "exam": [],
+        "web": [],
+        "source": "wiktionary",
+    }
+
+
+# --------------------------------------------------------------------------
+# 合并 / 缓存
+# --------------------------------------------------------------------------
+
+def lookup(word: str) -> dict:
+    word = normalize_word(word)
+    now = time.time()
+    hit = _cache.get(word)
+    if hit and now - hit[0] < CACHE_TTL:
+        return dict(hit[1])
+
+    errors = []
+    payload = None
+
+    try:
+        payload = lookup_youdao(word)
+    except urllib.error.HTTPError as exc:
+        errors.append(f"有道 HTTP {exc.code}")
+    except (urllib.error.URLError, socket.timeout, TimeoutError):
+        errors.append("有道连接失败")
+    except Exception as exc:  # 解析崩了也要能降级
+        errors.append(f"有道异常 {type(exc).__name__}")
+
+    if payload is None:
+        try:
+            payload = lookup_wiktionary(word)
+        except urllib.error.HTTPError as exc:
+            errors.append(f"wiktionary HTTP {exc.code}")
+        except (urllib.error.URLError, socket.timeout, TimeoutError):
+            errors.append("wiktionary 连接失败")
+        except Exception as exc:
+            errors.append(f"wiktionary 异常 {type(exc).__name__}")
+
+    if payload is None:
+        detail = "、".join(errors) if errors else "两个词典都没收录"
+        raise LookupError(detail)
+
+    payload["word"] = payload.get("word") or word
+    payload["saved"] = is_saved(payload["word"])
+
+    _cache[word] = (now, payload)
+    return dict(payload)
+
+
+# --------------------------------------------------------------------------
+# Markdown 词表
+# --------------------------------------------------------------------------
+
+def _split_meaning(payload: dict) -> tuple[str, str, str]:
+    """拆成 (词性, 中文, 英文) 三段拼好的文本。"""
+    pos_list, zh_list, en_list = [], [], []
+    for item in payload.get("entries") or []:
+        pos = (item.get("pos") or "").strip()
+        zh = (item.get("zh") or "").strip()
+        en = (item.get("en") or "").strip()
+        if pos:
+            pos_list.append(pos)
+        if zh:
+            zh_list.append(zh)
+        if en:
+            en_list.append(en)
+    return (
+        " ".join(dict.fromkeys(pos_list)),
+        "；".join(dict.fromkeys(zh_list)),
+        " ".join(dict.fromkeys(en_list)),
+    )
+
+
+def _meaning_line(payload: dict, show_pos: bool = True) -> str:
+    """按词性分组拼「词性 + 意思」，多词性才不会被拼错。"""
+    grouped: dict[str, list] = defaultdict(list)
+    for item in payload.get("entries") or []:
+        text = (item.get("zh") or "").strip()
+        if text:
+            grouped[(item.get("pos") or "").strip()].append(text)
+    if not grouped:                     # 只有英文释义的降级情况
+        for item in payload.get("entries") or []:
+            text = (item.get("en") or "").strip()
+            if text:
+                grouped[(item.get("pos") or "").strip()].append(text)
+
+    parts = []
+    for pos, texts in grouped.items():
+        uniq = [t for t in dict.fromkeys(texts) if t]
+        if not uniq:
+            continue
+        head = (pos + " ") if (pos and show_pos) else ""
+        parts.append(head + "；".join(uniq))
+    return "；".join(parts)
+
+
+def _examples_text(payload: dict, limit: int = 3) -> str:
+    out = []
+    for ex in (payload.get("examples") or [])[:limit]:
+        if not ex.get("en"):
+            continue
+        out.append("- " + ex["en"])
+        if ex.get("zh"):
+            out.append("  - " + ex["zh"])
+    return "\n".join(out)
+
+
+def to_markdown(payload: dict, cfg: dict | None = None) -> str:
+    """按配置拼词条。默认仍然是两行：单词 +「词性 意思」。"""
+    cfg = cfg or load_config()
+    fields = cfg.get("fields") or {}
+    template = (cfg.get("template") or "").strip()
+
+    word = payload.get("word") or ""
+    pos, zh, en = _split_meaning(payload)
+
+    phones = []
+    if payload.get("uk"):
+        phones.append(f"UK /{payload['uk']}/")
+    if payload.get("us"):
+        phones.append(f"US /{payload['us']}/")
+    if payload.get("phonetic"):
+        phones.append(payload["phonetic"])
+    phone_text = " · ".join(phones)
+
+    examples = _examples_text(payload)
+    forms = "；".join(dict.fromkeys(payload.get("forms") or []))
+    exam = " / ".join(payload.get("exam") or [])
+    web = "；".join(payload.get("web") or [])
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+
+    # 自定义模板优先。占位符：{{word}} {{pos}} {{zh}} {{en}} {{phonetic}}
+    #                   {{examples}} {{forms}} {{exam}} {{web}} {{time}}
+    if template:
+        ctx = {
+            "word": word, "pos": pos, "zh": zh, "en": en,
+            "phonetic": phone_text, "examples": examples,
+            "forms": forms, "exam": exam, "web": web, "time": stamp,
+        }
+        filled = re.sub(r"\{\{(\w+)\}\}", lambda m: str(ctx.get(m.group(1).lower(), "")), template)
+        block = filled.rstrip()
+        # 模板里没写 ## 标题时替它补上：判重、撤销、导出 Anki 都靠这个标记
+        if not block.lstrip().startswith("## "):
+            block = f"## {word}\n{block}"
+        return block + "\n\n"
+
+    head = _meaning_line(payload, show_pos=bool(fields.get("pos", True)))
+    lines = [f"## {word}", head or "（词典没给释义）"]
+
+    if fields.get("en") and en:
+        lines.append(f"- **英文**：{en}")
+    if fields.get("phonetic") and phone_text:
+        lines.append(f"- **音标**：{phone_text}")
+    if fields.get("examples") and examples:
+        lines.append("- **例句**：")
+        lines.extend("  " + line for line in examples.splitlines())
+    if fields.get("forms") and forms:
+        lines.append(f"- **变形**：{forms}")
+    if fields.get("exam") and exam:
+        lines.append(f"- **考试**：{exam}")
+    if fields.get("web") and web:
+        lines.append(f"- **网络释义**：{web}")
+    if fields.get("time"):
+        lines.append(f"- **收录**：{stamp}")
+    return "\n".join(lines) + "\n\n"
+
+
+HEADER = (
+    "# 生词本\n\n"
+    "> 一行单词，一行词性和意思。\n\n"
+)
+
+
+def read_notes(path: str) -> str:
+    if not os.path.exists(path):
+        return ""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def is_saved(word: str, path: str | None = None) -> bool:
+    path = path or NOTES_PATH
+    text = read_notes(path)
+    if not text:
+        return False
+    pattern = re.compile(rf"^##\s+{re.escape(word)}\s*$", re.MULTILINE | re.IGNORECASE)
+    return bool(pattern.search(text))
+
+
+def save_word(word: str, path: str | None = None) -> dict:
+    path = path or NOTES_PATH
+    word = normalize_word(word)
+    with _lock:
+        if is_saved(word, path):
+            return {"ok": True, "duplicate": True, "path": path}
+
+        payload = lookup(word)
+        block = to_markdown(payload, load_config())
+
+        new_file = not os.path.exists(path)
+        # 新建文件时，撤销点要落在「标题头之后」，否则会把整个文件删掉
+        size_before = len(HEADER.encode("utf-8")) if new_file else os.path.getsize(path)
+        with open(path, "a", encoding="utf-8", newline="\n") as fh:
+            if new_file:
+                fh.write(HEADER)
+            else:
+                existing = read_notes(path)
+                if existing and not existing.endswith("\n"):
+                    fh.write("\n")
+            fh.write(block)
+
+        count = len(re.findall(r"^##\s+\S", read_notes(path), re.MULTILINE))
+        _cache.pop(word, None)   # 缓存里还留着 saved=False，不失效会让界面反复横跳
+
+        # 记住「写之前有多长」，撤销时截回这个位置
+        _UNDO.clear()
+        _UNDO.update({"path": path, "size": size_before, "word": word})
+
+        return {"ok": True, "duplicate": False, "path": path, "count": count}
+
+
+def undo_last() -> dict:
+    """撤掉最近写入的那一条。只认最近一次，且文件没被别人动过。"""
+    with _lock:
+        if not _UNDO:
+            return {"ok": False, "error": "没有可撤销的记录"}
+        path = _UNDO.get("path") or NOTES_PATH
+        size = int(_UNDO.get("size") or 0)
+        word = _UNDO.get("word") or ""
+        _UNDO.clear()
+
+        if not os.path.exists(path):
+            return {"ok": False, "error": "词表文件已经不在了"}
+        if size == 0:                      # 这次是新建的文件，撤销 = 删掉它
+            try:
+                os.remove(path)
+            except OSError as exc:
+                return {"ok": False, "error": f"删除失败：{exc}"}
+        else:
+            if os.path.getsize(path) < size:
+                return {"ok": False, "error": "词表被别的程序改过，没敢动"}
+            with open(path, "r+b") as fh:
+                fh.truncate(size)
+
+        _cache.pop(word, None)
+        count = 0
+        if os.path.exists(path):
+            count = len(re.findall(r"^##\s+\S", read_notes(path), re.MULTILINE))
+        return {"ok": True, "word": word, "count": count}
+
+
+def export_anki_csv() -> bytes:
+    """把词表导成 Anki 能吃的 CSV（带 BOM，Excel 不乱码）。"""
+    text = read_notes(NOTES_PATH)
+    rows = []
+    for block in re.split(r"(?m)^## ", text)[1:]:
+        lines = [l for l in block.strip().splitlines() if l.strip()]
+        if not lines:
+            continue
+        word = lines[0].strip()
+        meaning = " ".join(
+            l.strip() for l in lines[1:] if not l.strip().startswith("- **")
+        ).strip()
+        rows.append([word, meaning])
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(["单词", "释义"])
+    writer.writerows(rows)
+    return buf.getvalue().encode("utf-8-sig")
+
+
+# --------------------------------------------------------------------------
+# HTTP 服务
+# --------------------------------------------------------------------------
+
+def default_notes_path() -> str:
+    """词表放桌面：程序住在 C:\\生词本，数据留在你看得见的地方。"""
+    desk = ""
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            desk = os.path.expandvars(winreg.QueryValueEx(key, "Desktop")[0])
+    except Exception:
+        desk = ""
+    if not desk or not os.path.isdir(desk):
+        desk = os.path.join(os.path.expanduser("~"), "Desktop")
+    if not os.path.isdir(desk):
+        return os.path.join(HERE, "词表.md")
+    return os.path.join(desk, "词表.md")
+
+
+NOTES_PATH = default_notes_path()
+
+# 启动器要按「真实端口」打开页面，而端口可能因为占用而顺延。
+# 与其让 VBS 去扫端口（每次建 COM 对象要几百毫秒），不如后端自己写一张小纸条。
+PORT_FILE = os.path.join(
+    os.environ.get("LOCALAPPDATA") or HERE, "Wordbook", "port.txt"
+)
+
+
+CONFIG_PATH = os.path.join(os.path.dirname(PORT_FILE), "config.json")
+
+# 记录哪些字段。默认保持「两行」，想加自己拧开关。
+DEFAULT_FIELDS = {
+    "pos": True,
+    "zh": True,
+    "en": False,
+    "phonetic": False,
+    "examples": False,
+    "forms": False,
+    "exam": False,
+    "web": False,
+    "time": False,
+}
+
+DEFAULT_CONFIG = {"fields": dict(DEFAULT_FIELDS), "template": ""}
+
+
+def load_config() -> dict:
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return cfg
+    if not isinstance(data, dict):
+        return cfg
+    fields = data.get("fields")
+    if isinstance(fields, dict):
+        for key in DEFAULT_FIELDS:
+            if key in fields:
+                cfg["fields"][key] = bool(fields[key])
+    if isinstance(data.get("template"), str):
+        cfg["template"] = data["template"]
+    return cfg
+
+
+def save_config(cfg: dict) -> None:
+    fields = {}
+    for key, default in DEFAULT_FIELDS.items():
+        fields[key] = bool(((cfg.get("fields") or {}).get(key, default)))
+    clean = {"fields": fields, "template": str(cfg.get("template") or "")}
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+        json.dump(clean, fh, ensure_ascii=False, indent=2)
+
+
+# 撤销只保留「最近一次」，够用又不惹事
+_UNDO: dict = {}
+
+
+def _write_port_file(port: int) -> None:
+    try:
+        os.makedirs(os.path.dirname(PORT_FILE), exist_ok=True)
+        with open(PORT_FILE, "w", encoding="utf-8") as fh:
+            fh.write(str(port))
+    except OSError:
+        pass
+
+
+def _clear_port_file(port: int) -> None:
+    try:
+        with open(PORT_FILE, "r", encoding="utf-8") as fh:
+            if fh.read().strip() != str(port):
+                return          # 不是自己写的，别乱删
+        os.remove(PORT_FILE)
+    except (OSError, ValueError):
+        pass
+
+
+def _track_client(delta: int) -> None:
+    global _SSE_CLIENTS
+    with _SSE_LOCK:
+        _SSE_CLIENTS = max(0, _SSE_CLIENTS + delta)
+
+
+def _graceful_shutdown(delay: float = 0.25) -> None:
+    """先把响应发出去，再把服务停掉。"""
+    time.sleep(delay)
+    if _SERVER is not None:
+        try:
+            _SERVER.shutdown()
+        except Exception:
+            pass
+
+
+def _idle_watchdog(started: float) -> None:
+    """双判据：快路径管关标签，慢路径管半开连接；另外处理睡眠与「生下来就没人连」。"""
+    global _LAST_HEARTBEAT
+    last_tick = time.time()
+    while True:
+        time.sleep(2)
+        now = time.time()
+
+        # 一次 tick 跳了 10 秒以上 = 刚从睡眠/挂起回来。
+        # 墙钟走了一大截，但页面其实一直开着，必须把心跳时间戳一起拨过来，
+        # 否则掀开盖子第一眼就被判成僵尸、当场自杀。
+        if now - last_tick > 10:
+            if _LAST_HEARTBEAT:
+                _LAST_HEARTBEAT = now
+            last_tick = now
+            continue
+        last_tick = now
+
+        # 启动后一直没人连过：60 秒还没人搭理就自己走，避免孤儿进程越积越多
+        if not _LAST_HEARTBEAT:
+            if now - started > 60:
+                print("启动后 60 秒没有任何页面连上来，服务自动退出。")
+                _graceful_shutdown(0)
+                return
+            continue
+
+        idle = now - _LAST_HEARTBEAT
+        with _SSE_LOCK:
+            clients = _SSE_CLIENTS
+        if clients == 0 and idle > FAST_EXIT_SEC:
+            print("没有页面连着了，服务自动退出。")
+            _graceful_shutdown(0)
+            return
+        if idle > SLOW_EXIT_SEC:
+            print("心跳已经停了 %d 秒，服务自动退出。" % int(idle))
+            _graceful_shutdown(0)
+            return
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "Wordbook/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):  # 控制台只留一行简版
+        # pythonw 下 sys.stderr 是 None，不判空会把每个请求都砸崩
+        try:
+            if sys.stderr is not None:
+                sys.stderr.write("  · %s\n" % (fmt % args))
+        except Exception:
+            pass
+
+    # -- helpers ---------------------------------------------------------
+    def _send(self, status: int, body: bytes, ctype: str):
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _json(self, status: int, obj: dict):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self._send(status, body, "application/json; charset=utf-8")
+
+    # -- routes ----------------------------------------------------------
+    def _stream_events(self) -> None:
+        """SSE 长连接：页面活着就挂着，标签一关这里就写失败。"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        _track_client(+1)
+        try:
+            while True:
+                self.wfile.write(b": keep-alive\n\n")
+                self.wfile.flush()
+                time.sleep(5)
+        except Exception:
+            pass
+        finally:
+            _track_client(-1)
+            self.close_connection = True
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        route = parsed.path
+
+        if route in ("/", "/index.html"):
+            try:
+                with open(INDEX_HTML, "rb") as fh:
+                    body = fh.read()
+            except FileNotFoundError:
+                self._send(500, b"index.html missing next to wordbook.py", "text/plain; charset=utf-8")
+                return
+            self._send(200, body, "text/html; charset=utf-8")
+            return
+
+        if route == "/api/watch":
+            self._stream_events()
+            return
+
+        if route == "/api/ping":
+            self._json(200, {"ok": True, "app": "wordbook"})
+            return
+
+        if route == "/api/config":
+            self._json(200, {"ok": True, "config": load_config(), "path": NOTES_PATH})
+            return
+
+        if route == "/api/export-anki":
+            body = export_anki_csv()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="wordbook-anki.csv"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if route == "/api/lookup":
+            params = urllib.parse.parse_qs(parsed.query)
+            raw = (params.get("word") or [""])[0]
+            word = normalize_word(raw)
+            if not word:
+                self._json(400, {"ok": False, "error": "先输入一个单词"})
+                return
+            if not WORD_RE.match(word):
+                self._json(400, {"ok": False, "error": "只认英文单词/短语，别塞奇怪字符"})
+                return
+            try:
+                payload = lookup(word)
+            except LookupError as exc:
+                self._json(404, {"ok": False, "error": str(exc)})
+                return
+            except Exception as exc:
+                self._json(502, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+                return
+            self._json(200, {"ok": True, **payload})
+            return
+
+        if route == "/api/notes":
+            payload = {
+                "ok": True,
+                "path": NOTES_PATH,
+                "exists": os.path.exists(NOTES_PATH),
+                "count": len(re.findall(r"^##\s+\S", read_notes(NOTES_PATH), re.MULTILINE)),
+            }
+            self._json(200, payload)
+            return
+
+        if route == "/favicon.ico":
+            self._send(204, b"", "image/x-icon")
+            return
+
+        self._json(404, {"ok": False, "error": "没这个页面"})
+
+    def _same_site(self) -> bool:
+        """挡跨站 POST，也挡 DNS rebinding：Host 必须字面是本机。"""
+        port = self.server.server_port
+        host = (self.headers.get("Host") or "").strip().lower()
+        # Host 是请求方自己带来的，不能拿它当比较基准——evil.com 解析到 127.0.0.1 后，
+        # 浏览器会认为 Origin 和 Host 同源，两道检查一起过。所以这里钉死白名单。
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"):
+            return False
+        site = self.headers.get("Sec-Fetch-Site")
+        if site and site not in ("same-origin", "none"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            if origin == "null" or not origin.lower().endswith("://" + host):
+                return False
+        return True
+
+    def do_POST(self):
+        global _LAST_HEARTBEAT
+        route = urllib.parse.urlparse(self.path).path
+
+        if not self._same_site():
+            self._json(403, {"ok": False, "error": "拒绝跨站请求"})
+            return
+
+        if route == "/api/heartbeat":
+            _LAST_HEARTBEAT = time.time()
+            self._json(200, {"ok": True})
+            return
+
+        if route == "/api/shutdown":
+            _LAST_HEARTBEAT = 0.0
+            self._json(200, {"ok": True, "bye": True})
+            threading.Thread(target=_graceful_shutdown, daemon=True).start()
+            return
+
+        if route == "/api/config":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                payload = json.loads(raw.decode("utf-8", "replace") or "{}")
+                save_config(payload if isinstance(payload, dict) else {})
+            except json.JSONDecodeError:
+                self._json(400, {"ok": False, "error": "请求体不是 JSON"})
+                return
+            except OSError as exc:
+                self._json(500, {"ok": False, "error": f"保存配置失败：{exc}"})
+                return
+            self._json(200, {"ok": True, "config": load_config()})
+            return
+
+        if route == "/api/undo":
+            self._json(200, undo_last())
+            return
+
+        if route == "/api/open-notes":
+            try:
+                os.startfile(NOTES_PATH)      # 只有 Windows 有这个
+            except Exception as exc:
+                self._json(500, {"ok": False, "error": str(exc)})
+                return
+            self._json(200, {"ok": True})
+            return
+
+        if route != "/api/save":
+            self._json(404, {"ok": False, "error": "没这个接口"})
+            return
+
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        try:
+            body = json.loads(raw.decode("utf-8", "replace") or "{}")
+        except json.JSONDecodeError:
+            self._json(400, {"ok": False, "error": "请求体不是 JSON"})
+            return
+
+        word = normalize_word(body.get("word") or "")
+        if not word or not WORD_RE.match(word):
+            self._json(400, {"ok": False, "error": "单词不合法"})
+            return
+
+        try:
+            self._json(200, save_word(word))
+        except LookupError as exc:
+            self._json(404, {"ok": False, "error": f"词典查不到，没写盘：{exc}"})
+        except OSError as exc:
+            self._json(500, {"ok": False, "error": f"写文件失败：{exc}"})
+        except Exception as exc:
+            self._json(500, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # Windows 上 SO_REUSEADDR 不是「快速重用」，而是允许抢绑别人正在监听的端口。
+    # 所以这里既不开它，也不靠它做快速重启。
+    allow_reuse_address = False
+
+    def server_bind(self):
+        # SO_EXCLUSIVEADDRUSE 才是 Windows 的独占语义：第二个实例会干净地 [WinError 10048]
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            except OSError:
+                pass
+        super().server_bind()
+
+
+def pick_port(preferred: int, tries: int = 20) -> int:
+    for offset in range(tries):
+        port = preferred + offset
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            # 关键：这里绝不能开 SO_REUSEADDR。Windows 上它不是「快速重用」，
+            # 而是允许绑定别人正在监听的端口——探测会把占用中误判成空闲。
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+        return port
+    raise SystemExit(f"端口 {preferred}~{preferred + tries - 1} 全被占了，换个 --port 吧")
+
+
+def main() -> None:
+    global NOTES_PATH, _SERVER
+
+    parser = argparse.ArgumentParser(description="本地生词本（左侧查词，右侧释义，记进 Markdown）")
+    parser.add_argument("--port", type=int, default=8765, help="监听端口，默认 8765")
+    parser.add_argument("--file", default=None, help="词表 Markdown 路径，默认是桌面上的 词表.md")
+    parser.add_argument("--no-browser", action="store_true", help="别自动开浏览器")
+    args = parser.parse_args()
+
+    if args.file:
+        NOTES_PATH = os.path.abspath(args.file)
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+    if not os.path.exists(INDEX_HTML):
+        raise SystemExit(f"缺少 index.html，得跟 wordbook.py 放一起：{INDEX_HTML}")
+
+    port = pick_port(args.port)
+    url = f"http://127.0.0.1:{port}/"
+    httpd = Server(("127.0.0.1", port), Handler)
+    _SERVER = httpd
+    _write_port_file(port)
+    threading.Thread(target=_idle_watchdog, args=(time.time(),), daemon=True).start()
+
+    print("生词本已启动：", url)
+    print("词表文件：", NOTES_PATH)
+    print("关闭这个窗口（或 Ctrl+C）就停。")
+
+    if not args.no_browser:
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n收到 Ctrl+C，收工。")
+    finally:
+        httpd.server_close()
+        _clear_port_file(port)
+
+
+if __name__ == "__main__":
+    main()

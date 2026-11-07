@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+词表.md
+port.txt
+config.json
+.DS_Store
+Thumbs.db

@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生词本</title>
+<style>
+  :root{
+    --paper:#f6f3ec;
+    --ink:#1f242b;
+    --muted:#6d7480;
+    --line:#e3ddd1;
+    --card:#fffdf8;
+    --accent:#0f766e;
+    --accent-soft:#e4f1ef;
+    --danger:#b3261e;
+    --shadow:0 1px 2px rgba(31,36,43,.06), 0 14px 34px -20px rgba(31,36,43,.4);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+    font-size:15px;
+    line-height:1.7;
+  }
+  .app{
+    display:grid;
+    grid-template-columns:330px minmax(0,1fr);
+    height:100vh;
+    max-width:1280px;
+    margin:0 auto;
+  }
+
+  /* 左栏 */
+  .left{
+    border-right:1px solid var(--line);
+    padding:28px 24px;
+    display:flex;
+    flex-direction:column;
+    gap:16px;
+    overflow:auto;
+  }
+  .brand{font-size:19px;margin:0;letter-spacing:.06em;font-weight:650}
+  .sub{color:var(--muted);font-size:12.5px;margin:4px 0 0}
+  form{display:flex;gap:8px}
+  input[type=text]{
+    flex:1;min-width:0;padding:12px 14px;font-size:17px;
+    font-family:Georgia,"Times New Roman",serif;
+    border:1px solid var(--line);border-radius:10px;background:var(--card);outline:none;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  input[type=text]:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  button{font:inherit;cursor:pointer;border-radius:10px;border:1px solid transparent;transition:.15s}
+  #go{padding:12px 16px;background:var(--accent);color:#fff;font-size:14px;letter-spacing:.06em}
+  #go:hover{background:#0b5f59}
+  .hint{margin:0;color:var(--muted);font-size:12.5px}
+  .recent{margin-top:auto}
+  .recent h2{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 8px;font-weight:600}
+  .recent ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+  .recent li{
+    font-family:Georgia,serif;font-size:13px;padding:4px 10px;
+    border:1px solid var(--line);border-radius:999px;background:var(--card);
+    cursor:pointer;color:#3a424c;
+  }
+  .recent li:hover{border-color:var(--accent);color:var(--accent)}
+  .recent li.saved{background:var(--accent-soft);border-color:#bfded9}
+  .quit{
+    margin-top:14px;padding:8px 12px;background:transparent;
+    border:1px solid var(--line);color:var(--muted);
+    font-size:12.5px;letter-spacing:.06em;
+  }
+  .quit:hover{border-color:var(--danger);color:var(--danger)}
+  .bye{
+    position:fixed;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:6px;
+    background:var(--paper);color:var(--muted);
+    font-size:14px;line-height:1.9;text-align:center;
+  }
+  .bye-h{font-size:20px;color:var(--ink);letter-spacing:.08em}
+
+  /* 右栏：只剩两行 */
+  .right{padding:36px 40px;overflow:auto;display:flex}
+  .empty{margin:auto;color:#a7a29a;font-size:14px;letter-spacing:.05em}
+  .card{
+    width:min(100%,620px);
+    margin:8vh auto 0;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:34px 36px 26px;
+    box-shadow:var(--shadow);
+  }
+  .word{
+    font-family:Georgia,"Times New Roman",serif;
+    font-size:40px;
+    line-height:1.15;
+    font-weight:600;
+    margin:0 0 12px;
+    letter-spacing:.01em;
+  }
+  .line{margin:0;font-size:17px;line-height:1.75;color:#2b313a}
+  .line .pos{font-family:Georgia,serif;font-style:italic;color:#8a5a2b;margin-right:6px}
+  .footer{
+    display:flex;align-items:center;gap:14px;
+    margin-top:26px;padding-top:18px;border-top:1px solid var(--line);
+  }
+  #save{padding:10px 22px;background:var(--accent);color:#fff;font-size:14px;letter-spacing:.06em}
+  #save:hover:not(:disabled){background:#0b5f59}
+  #save:disabled{opacity:.55;cursor:not-allowed}
+  #save.done{background:var(--accent-soft);color:#0b5f59;opacity:1}
+  .note{font-size:12.5px;color:var(--muted)}
+  .error{border-left:3px solid var(--danger);background:#fdf1f0;padding:16px 20px;border-radius:8px;color:#7a1c17;font-size:14px}
+  .error b{display:block;margin-bottom:4px}
+  .loading{color:var(--muted);font-size:14px;letter-spacing:.08em}
+
+  .toast{
+    position:fixed;left:50%;bottom:28px;transform:translateX(-50%);
+    background:#20242a;color:#fff;font-size:13.5px;padding:10px 18px;border-radius:999px;
+    opacity:0;transition:opacity .18s, transform .18s;pointer-events:none;z-index:9;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+
+  .actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+  .mini{
+    padding:6px 10px;background:transparent;border:1px solid var(--line);
+    color:var(--muted);font-size:12px;letter-spacing:.04em;
+  }
+  .mini:hover{border-color:var(--accent);color:var(--accent)}
+  .ghost{
+    padding:9px 14px;background:transparent;border:1px solid var(--line);
+    color:var(--muted);font-size:13px;
+  }
+  .ghost:hover{border-color:var(--danger);color:var(--danger)}
+
+  /* 设置面板 */
+  .sheet{
+    position:fixed;inset:0;background:rgba(20,24,30,.45);
+    display:flex;align-items:center;justify-content:center;z-index:20;padding:24px;
+  }
+  .sheet[hidden]{display:none}
+  .sheet-box{
+    width:min(560px,100%);max-height:86vh;overflow:auto;
+    background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:26px 28px 20px;box-shadow:var(--shadow);
+  }
+  .sheet-box h2{margin:0 0 4px;font-size:18px;letter-spacing:.04em}
+  .sheet-hint{margin:0 0 16px;color:var(--muted);font-size:12.5px}
+  .presets{display:flex;gap:8px;margin-bottom:16px}
+  .presets button{
+    padding:6px 14px;border:1px solid var(--line);background:transparent;
+    color:#4a5058;font-size:13px;border-radius:999px;
+  }
+  .presets button:hover{border-color:var(--accent);color:var(--accent)}
+  .fields{
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));
+    gap:8px 12px;margin-bottom:18px;
+  }
+  .fields label{display:flex;align-items:center;gap:7px;font-size:13.5px;color:#3a424c}
+  .tpl{display:block;font-size:12.5px;color:var(--muted);line-height:1.7}
+  .tpl textarea{
+    width:100%;margin-top:6px;padding:10px 12px;font-family:Consolas,"Courier New",monospace;
+    font-size:12.5px;line-height:1.6;color:var(--ink);background:var(--paper);
+    border:1px solid var(--line);border-radius:8px;resize:vertical;outline:none;
+  }
+  .tpl textarea:focus{border-color:var(--accent)}
+  .sheet-foot{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+  .sheet-foot .primary{padding:9px 20px;background:var(--accent);color:#fff;font-size:13.5px}
+  .sheet-foot button{padding:9px 16px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:13.5px}
+
+  @media (prefers-color-scheme: dark){
+    :root{
+      --paper:#14171c; --ink:#e9e6df; --muted:#98a1ab; --line:#2a3038;
+      --card:#1b1f26; --accent:#45b8a9; --accent-soft:#12312e; --danger:#ff6f63;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 14px 34px -20px rgba(0,0,0,.8);
+    }
+    .word{color:#f3f0ea}
+    .line{color:#d7d3cb}
+    .presets button{color:#c9c4bb}
+    .recent li{color:#c9c4bb}
+    .fields label{color:#cfcac2}
+    .sheet{background:rgba(0,0,0,.6)}
+  }
+
+  @media (max-width:820px){
+    .app{grid-template-columns:1fr;height:auto}
+    .left{border-right:0;border-bottom:1px solid var(--line)}
+    .right{padding:24px 20px 80px}
+    .card{padding:24px 22px;margin-top:12px}
+    .word{font-size:32px}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="left">
+    <div>
+      <h1 class="brand">生词本</h1>
+      <p class="sub">输入 · 回车 · 记下</p>
+    </div>
+
+    <form id="form" autocomplete="off">
+      <input id="q" type="text" placeholder="serendipity" spellcheck="false" autofocus>
+      <button id="go" type="submit">查询</button>
+    </form>
+
+    <p class="hint">只显示单词和「词性 + 意思」；要留档就点右侧「记下」。</p>
+
+    <div class="recent">
+      <h2>最近查过</h2>
+      <ul id="recent"></ul>
+    </div>
+
+    <div class="actions">
+      <button id="openNotes" class="mini" type="button">打开词表</button>
+      <button id="exportAnki" class="mini" type="button">导出 Anki</button>
+      <button id="settings" class="mini" type="button">⚙ 记录设置</button>
+    </div>
+
+    <button id="quit" class="quit" type="button">退出程序</button>
+  </aside>
+
+  <main class="right" id="right">
+    <div class="empty" id="empty">左侧敲一个英文单词，右边出词性和意思。</div>
+    <article class="card" id="card" hidden></article>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-box">
+    <h2>记录设置</h2>
+    <p class="sheet-hint">只影响以后「记下」的词条，已经记好的不会改动。</p>
+
+    <div class="presets">
+      <button data-preset="min" type="button">极简</button>
+      <button data-preset="card" type="button">学习卡</button>
+      <button data-preset="full" type="button">全量</button>
+    </div>
+
+    <div class="fields" id="fields"></div>
+
+    <label class="tpl">自定义模板（留空就用上面的开关；填了就以模板为准）
+      <textarea id="template" rows="4" placeholder="{{word}}&#10;{{pos}} {{zh}}"></textarea>
+    </label>
+
+    <div class="sheet-foot">
+      <button id="cancelCfg" type="button">取消</button>
+      <button id="saveCfg" class="primary" type="button">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const input = $("q");
+  const card = $("card");
+  const empty = $("empty");
+  const toastEl = $("toast");
+  const recentEl = $("recent");
+
+  const RECENT_KEY = "wordbook.recent.v1";
+  const SAVED_KEY = "wordbook.saved.v1";
+
+  let current = null;
+  let busy = false;
+  let canUndo = false;
+  let toastTimer = null;
+
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2400);
+  }
+
+  function loadStored(key) {
+    try { return JSON.parse(localStorage.getItem(key) || "[]"); }
+    catch (e) { return []; }
+  }
+
+  function store(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  }
+
+  function pushRecent(word) {
+    const list = loadStored(RECENT_KEY).filter((w) => w !== word);
+    list.unshift(word);
+    store(RECENT_KEY, list.slice(0, 14));
+    renderRecent();
+  }
+
+  function renderRecent() {
+    const words = loadStored(RECENT_KEY);
+    const saved = new Set(loadStored(SAVED_KEY));
+    recentEl.textContent = "";
+    if (!words.length) {
+      const li = el("li", null, "还没有记录");
+      li.style.cursor = "default";
+      li.style.opacity = ".6";
+      recentEl.appendChild(li);
+      return;
+    }
+    words.forEach((w) => {
+      const li = el("li", saved.has(w) ? "saved" : null, w);
+      li.title = w + "（点击重查）";
+      li.addEventListener("click", () => {
+        input.value = w;
+        doLookup(w);
+      });
+      recentEl.appendChild(li);
+    });
+  }
+
+  // 把接口返回压成「词性 + 意思」的若干段
+  function buildParts(data) {
+    const entries = (data.entries || []).filter((e) => e && (e.zh || e.en));
+    const withZh = entries.filter((e) => e.zh);
+    const list = withZh.length ? withZh : entries;
+
+    const groups = new Map();
+    list.forEach((e) => {
+      const pos = e.pos || "";
+      const text = (e.zh || e.en || "").trim();
+      if (!text) return;
+      if (!groups.has(pos)) groups.set(pos, []);
+      const arr = groups.get(pos);
+      if (arr.indexOf(text) < 0) arr.push(text);
+    });
+
+    const out = [];
+    groups.forEach((texts, pos) => out.push({ pos, text: texts.join("；") }));
+    return out;
+  }
+
+  function render(data) {
+    card.textContent = "";
+    card.hidden = false;
+    empty.hidden = true;
+
+    card.appendChild(el("h2", "word", data.word));
+
+    const line = el("p", "line");
+    const parts = buildParts(data);
+    if (!parts.length) {
+      line.textContent = "（这个词典没给释义）";
+      line.style.color = "#8b8b8b";
+    } else {
+      parts.forEach((p, i) => {
+        if (i) line.appendChild(document.createTextNode("；"));
+        if (p.pos) line.appendChild(el("span", "pos", p.pos));
+        line.appendChild(document.createTextNode(p.text));
+      });
+    }
+    card.appendChild(line);
+
+    const foot = el("div", "footer");
+    const btn = el("button", null, data.saved ? "已在词表里" : "记下");
+    btn.id = "save";
+    btn.type = "button";
+    if (data.saved) {
+      btn.disabled = true;
+    } else {
+      btn.addEventListener("click", () => saveWord(btn));
+    }
+    foot.appendChild(btn);
+
+    const undoBtn = el("button", "ghost", "撤销上一条");
+    undoBtn.id = "undoBtn";
+    undoBtn.type = "button";
+    undoBtn.hidden = !canUndo;
+    undoBtn.addEventListener("click", () => doUndo(undoBtn));
+    foot.appendChild(undoBtn);
+
+    foot.appendChild(el("span", "note", "写入 词表.md，两行一条"));
+    card.appendChild(foot);
+  }
+
+  function renderError(message, word) {
+    card.hidden = false;
+    empty.hidden = true;
+    card.textContent = "";
+    const box = el("div", "error");
+    box.appendChild(el("b", null, "没查到「" + (word || "") + "」"));
+    box.appendChild(el("div", null, message));
+    card.appendChild(box);
+  }
+
+  function renderLoading(word, controller) {
+    card.hidden = false;
+    empty.hidden = true;
+    card.textContent = "";
+    const box = el("div", "loading");
+    box.appendChild(document.createTextNode("正在查「" + word + "」… "));
+    const cancel = el("button", "mini", "取消");
+    cancel.type = "button";
+    cancel.style.marginLeft = "8px";
+    cancel.addEventListener("click", () => {
+      try { controller.abort(); } catch (e) {}
+    });
+    box.appendChild(cancel);
+    card.appendChild(box);
+  }
+
+  let inflight = null;
+
+  async function doLookup(rawWord) {
+    const word = (rawWord || "").trim();
+    if (!word) return;
+    if (inflight) { try { inflight.abort(); } catch (e) {} }
+
+    const controller = new AbortController();
+    inflight = controller;
+    busy = true;
+    renderLoading(word, controller);
+    const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, 20000);
+
+    try {
+      const resp = await fetch("/api/lookup?word=" + encodeURIComponent(word), {
+        signal: controller.signal
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        renderError(data.error || "查询失败", word);
+        return;
+      }
+      current = data;
+      render(data);
+      pushRecent(data.word);
+      if (data.saved) toast("这个词已经在词表里了");
+    } catch (err) {
+      if (err.name === "AbortError") renderError("查询超时或被取消（上限 20 秒）", word);
+      else renderError("本地服务没响应：" + err.message, word);
+    } finally {
+      clearTimeout(timer);
+      if (inflight === controller) inflight = null;
+      busy = false;
+    }
+  }
+
+  async function saveWord(btn) {
+    if (!current) return;
+    btn.disabled = true;
+    btn.textContent = "写入中…";
+    try {
+      const resp = await fetch("/api/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word: current.word })
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        btn.disabled = false;
+        btn.textContent = "记下";
+        toast("写入失败：" + (data.error || "未知错误"));
+        return;
+      }
+      if (data.duplicate) {
+        btn.textContent = "已在词表里";
+        toast("之前就记过了，没重复写");
+      } else {
+        btn.textContent = "已收录";
+        btn.classList.add("done");
+        canUndo = true;
+        const ub = $("undoBtn");
+        if (ub) ub.hidden = false;
+        toast("已写入 " + data.path + "（共 " + data.count + " 条）");
+      }
+      const saved = new Set(loadStored(SAVED_KEY));
+      saved.add(current.word);
+      store(SAVED_KEY, [...saved]);
+      current.saved = true;
+      renderRecent();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "记下";
+      toast("写入失败：" + err.message);
+    }
+  }
+
+  // ---- 存活判据：SSE 长连接（快）+ 心跳（兜底）----
+  let watch = null;
+  try {
+    watch = new EventSource("/api/watch");
+  } catch (e) {}
+
+  function heartbeat() {
+    fetch("/api/heartbeat", { method: "POST" }).catch(() => {});
+  }
+  heartbeat();
+  setInterval(heartbeat, 20000);
+
+  $("quit").addEventListener("click", async () => {
+    if (!confirm("关闭生词本服务？关掉后这个页面就不能再查词了。")) return;
+    if (watch) { try { watch.close(); } catch (e) {} }
+    try { await fetch("/api/shutdown", { method: "POST" }); } catch (e) {}
+    document.body.innerHTML =
+      '<div class="bye">' +
+      '<div class="bye-h">已退出</div>' +
+      '服务已关闭，直接关掉这个标签页就行。<br>' +
+      '下次双击桌面上的「生词本」图标重新打开。' +
+      '</div>';
+  });
+
+  // ---- 撤销 ----
+  async function doUndo(btn) {
+    btn.disabled = true;
+    try {
+      const resp = await fetch("/api/undo", { method: "POST" });
+      const data = await resp.json();
+      if (!data.ok) {
+        toast(data.error || "撤销失败");
+        return;
+      }
+      canUndo = false;
+      btn.hidden = true;
+      toast("已撤销「" + data.word + "」");
+      if (current && current.word === data.word) {
+        current.saved = false;
+        render(current);
+      }
+    } catch (err) {
+      toast("撤销失败：" + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ---- 记录设置 ----
+  const FIELD_DEFS = [
+    ["pos", "词性"], ["zh", "中文释义"], ["en", "英文原义"],
+    ["phonetic", "音标"], ["examples", "例句"], ["forms", "变形"],
+    ["exam", "考试标签"], ["web", "网络释义"], ["time", "记录时间"]
+  ];
+  const PRESETS = {
+    min: { pos: true, zh: true },
+    card: { pos: true, zh: true, phonetic: true, examples: true },
+    full: {
+      pos: true, zh: true, en: true, phonetic: true, examples: true,
+      forms: true, exam: true, web: true, time: true
+    }
+  };
+  let cfg = { fields: { pos: true, zh: true }, template: "" };
+
+  async function loadCfg() {
+    try {
+      const resp = await fetch("/api/config");
+      const data = await resp.json();
+      if (data.ok && data.config) cfg = data.config;
+    } catch (e) {}
+  }
+
+  function renderFields() {
+    const box = $("fields");
+    box.textContent = "";
+    FIELD_DEFS.forEach(([key, label]) => {
+      const lab = el("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.dataset.key = key;
+      cb.checked = !!(cfg.fields && cfg.fields[key]);
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(label));
+      box.appendChild(lab);
+    });
+  }
+
+  function readFields() {
+    const out = {};
+    $("fields").querySelectorAll("input[type=checkbox]").forEach((cb) => {
+      out[cb.dataset.key] = cb.checked;
+    });
+    return out;
+  }
+
+  function applyPreset(name) {
+    const preset = PRESETS[name] || {};
+    $("fields").querySelectorAll("input[type=checkbox]").forEach((cb) => {
+      cb.checked = Object.prototype.hasOwnProperty.call(preset, cb.dataset.key)
+        ? !!preset[cb.dataset.key]
+        : false;
+    });
+  }
+
+  $("settings").addEventListener("click", async () => {
+    await loadCfg();
+    renderFields();
+    $("template").value = cfg.template || "";
+    $("sheet").hidden = false;
+  });
+
+  $("cancelCfg").addEventListener("click", () => { $("sheet").hidden = true; });
+
+  document.querySelectorAll(".presets button").forEach((b) => {
+    b.addEventListener("click", () => applyPreset(b.dataset.preset));
+  });
+
+  $("saveCfg").addEventListener("click", async () => {
+    const body = { fields: readFields(), template: $("template").value };
+    try {
+      const resp = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await resp.json();
+      if (!data.ok) { toast("保存失败：" + (data.error || "")); return; }
+      cfg = data.config;
+      $("sheet").hidden = true;
+      toast("设置已保存，从下一条开始生效");
+    } catch (err) {
+      toast("保存失败：" + err.message);
+    }
+  });
+
+  // ---- 打开词表 / 导出 Anki ----
+  $("openNotes").addEventListener("click", async () => {
+    try {
+      const resp = await fetch("/api/open-notes", { method: "POST" });
+      const data = await resp.json();
+      if (!data.ok) toast("打不开：" + (data.error || ""));
+    } catch (err) {
+      toast("打不开：" + err.message);
+    }
+  });
+
+  $("exportAnki").addEventListener("click", () => {
+    window.location.href = "/api/export-anki";
+  });
+
+  // ---- 快捷键：Ctrl+D 记下，↑↓ 翻最近查过 ----
+  let recentIndex = -1;
+  document.addEventListener("keydown", (ev) => {
+    if (ev.ctrlKey && (ev.key === "d" || ev.key === "D")) {
+      ev.preventDefault();
+      const b = $("save");
+      if (b && !b.disabled) b.click();
+      return;
+    }
+    if (document.activeElement === input) return;
+    const words = loadStored(RECENT_KEY);
+    if (!words.length) return;
+    if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+      ev.preventDefault();
+      recentIndex = ev.key === "ArrowDown"
+        ? (recentIndex + 1) % words.length
+        : (recentIndex - 1 + words.length) % words.length;
+      input.value = words[recentIndex];
+      doLookup(words[recentIndex]);
+    }
+  });
+
+  loadCfg();
+
+  $("form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    doLookup(input.value);
+  });
+
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      input.value = "";
+      input.focus();
+    }
+  });
+
+  renderRecent();
+})();
+</script>
+</body>
+</html>
