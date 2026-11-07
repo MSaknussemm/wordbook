@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.3.4"
+__version__ = "1.4.0"
 
 import argparse
 import csv
@@ -518,9 +518,10 @@ def format_entry(payload: dict, cfg: dict | None = None, lang: str = "zh") -> st
         }
         filled = re.sub(r"\{\{\s*(\w+)\s*\}\}", lambda m: str(ctx.get(m.group(1).lower(), "")), template)
         block = filled.rstrip()
-        # 纯文本词表靠「第一行是单词」判重；模板没把单词放第一行就补上
+        # 纯文本词表靠「第一行的第一个词元」判重；模板没把单词放最前就补一行
         first = block.splitlines()[0].strip() if block else ""
-        if normalize_word(first) != normalize_word(word):
+        first_token = re.split(r"[\s|\t/]+", first, maxsplit=1)[0] if first else ""
+        if normalize_word(first_token) != normalize_word(word):
             block = word + (("\n" + block) if block else "")
         return _sanitize_block(block) + "\n\n"
 
@@ -594,10 +595,21 @@ def migrate_legacy_md(txt_path: str) -> None:
 
 
 def read_notes(path: str) -> str:
+    """读词表：兼容 UTF-8 BOM 与 GBK。
+
+    记事本另存为「UTF-8 with BOM」很常见，BOM 会粘在第一个词前面，
+    让判重永远认不出第一条——所以先按 utf-8-sig 解（能自动吃掉 BOM）。
+    """
     if not os.path.exists(path):
         return ""
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
-        return fh.read()
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    for encoding in ("utf-8-sig", "gbk"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", "replace")
 
 
 def parse_entries(text: str) -> list[tuple[str, str]]:
@@ -1149,6 +1161,39 @@ class Handler(BaseHTTPRequestHandler):
             _LAST_HEARTBEAT = 0.0
             self._json(200, {"ok": True, "bye": True})
             threading.Thread(target=_graceful_shutdown, daemon=True).start()
+            return
+
+        if route == "/api/preview":
+            lang = self._lang()
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                body = json.loads(raw.decode("utf-8", "replace") or "{}")
+            except json.JSONDecodeError:
+                self._json(400, {"ok": False, "code": "bad_json", "error": message("bad_json", lang)})
+                return
+
+            word = normalize_word(body.get("word") or "")
+            if not word or not WORD_RE.match(word):
+                self._json(400, {"ok": False, "code": "bad_word", "error": message("bad_word", lang)})
+                return
+
+            preview_cfg = {
+                "fields": body.get("fields") if isinstance(body.get("fields"), dict) else {},
+                "template": body.get("template") or "",
+                "lang": lang,
+            }
+            try:
+                payload = lookup(word)
+            except LookupNetworkError as exc:
+                self._json(502, {"ok": False, "code": "net_error",
+                                 "error": message("net_error", lang), "detail": str(exc)})
+                return
+            except LookupError as exc:
+                self._json(404, {"ok": False, "code": "not_found",
+                                 "error": message("not_found", lang), "detail": str(exc)})
+                return
+            self._json(200, {"ok": True, "text": format_entry(payload, preview_cfg, lang=lang).rstrip()})
             return
 
         if route == "/api/config":

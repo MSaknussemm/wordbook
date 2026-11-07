@@ -118,6 +118,11 @@ class TestFormat(unittest.TestCase):
         self.assertEqual(out.splitlines()[0], "serendipity")
         self.assertEqual(out.splitlines()[1], "意外发现美好事物的运气，机缘巧合")
 
+    def test_template_with_word_prefix_is_not_doubled(self):
+        out = wordbook.format_entry(PAYLOAD, {"fields": {}, "template": "{{word}} | {{zh}}"})
+        self.assertEqual(len(out.strip().splitlines()), 1, "单词已经在行首，不该再补一行")
+        self.assertTrue(out.startswith("serendipity | "))
+
 
     def test_template_with_blank_line_is_collapsed(self):
         out = wordbook.format_entry(PAYLOAD, {"fields": {}, "template": "{{word}}\n\n{{zh}}"})
@@ -148,6 +153,23 @@ class TestParse(unittest.TestCase):
                 fh.write("Run\nv. 跑\n")
             self.assertTrue(wordbook.is_saved("run", path))
             self.assertFalse(wordbook.is_saved("lucid", path))
+
+    def test_bom_file_still_dedupes(self):
+        """记事本另存为 UTF-8 with BOM 后，第一条不能被当成新词。"""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.txt")
+            with open(path, "w", encoding="utf-8-sig", newline="\n") as fh:
+                fh.write("apple\nn. 苹果\n\n")
+            self.assertTrue(os.path.exists(path))
+            self.assertTrue(wordbook.is_saved("apple", path))
+            self.assertEqual(wordbook.parse_entries(wordbook.read_notes(path))[0][0], "apple")
+
+    def test_gbk_file_is_readable(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.txt")
+            with open(path, "wb") as fh:
+                fh.write("apple\nn. 苹果\n".encode("gbk"))
+            self.assertTrue(wordbook.is_saved("apple", path))
 
 
 class TestCsv(unittest.TestCase):

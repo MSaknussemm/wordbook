@@ -17,6 +17,7 @@
     --shadow:0 1px 2px rgba(31,36,43,.06), 0 14px 34px -20px rgba(31,36,43,.4);
   }
   *{box-sizing:border-box}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   html,body{height:100%}
   body{
     margin:0;
@@ -56,7 +57,7 @@
   #go{padding:12px 16px;background:var(--accent);color:#fff;font-size:14px;letter-spacing:.06em}
   #go:hover{background:#0b5f59}
   .hint{margin:0;color:var(--muted);font-size:12.5px}
-  .recent{margin-top:auto}
+  .recent{margin-top:2px}
   .recent h2{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 8px;font-weight:600}
   .recent ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
   .recent li{
@@ -89,6 +90,10 @@
   }
   .line{margin:0;font-size:17px;line-height:1.75;color:#2b313a}
   .line .pos{font-family:Georgia,serif;font-style:italic;color:#8a5a2b;margin-right:6px}
+  .entry-row{display:flex;gap:10px;margin-bottom:6px}
+  .entry-row:last-child{margin-bottom:0}
+  .entry-row .pos{flex:0 0 auto;min-width:36px;margin-right:0;padding-top:1px}
+  .entry-row .def{flex:1;min-width:0;max-width:62ch}
   .footer{
     display:flex;align-items:center;gap:14px;flex-wrap:wrap;
     margin-top:26px;padding-top:18px;border-top:1px solid var(--line);
@@ -99,7 +104,7 @@
   #save.done{background:var(--accent-soft);color:#0b5f59;opacity:1}
   .note{font-size:12.5px;color:var(--muted)}
 
-  .actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+  .actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto}
   .mini{
     padding:6px 10px;background:transparent;border:1px solid var(--line);
     color:var(--muted);font-size:12px;letter-spacing:.04em;
@@ -157,6 +162,17 @@
   .sheet-foot .primary{padding:9px 20px;background:var(--accent);color:#fff;font-size:13.5px}
   .sheet-foot button{padding:9px 16px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:13.5px}
 
+  .preview{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+  .preview .cap{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);letter-spacing:.06em}
+  .preview .badge{font-size:11px;padding:1px 8px;border-radius:999px;background:var(--accent-soft);color:var(--accent)}
+  .preview pre{
+    margin:8px 0 0;padding:10px 12px;background:var(--paper);border:1px solid var(--line);
+    border-radius:8px;font-family:Consolas,"Courier New",monospace;font-size:12.5px;
+    line-height:1.6;white-space:pre-wrap;word-break:break-word;
+    max-height:170px;overflow:auto;color:var(--ink);
+  }
+  .preview .empty{font-size:12.5px;color:var(--muted);margin:8px 0 0}
+
   .error{border-left:3px solid var(--danger);background:#fdf1f0;padding:16px 20px;border-radius:8px;color:#7a1c17;font-size:14px}
   .error b{display:block;margin-bottom:4px}
   .loading{color:var(--muted);font-size:14px;letter-spacing:.08em}
@@ -188,6 +204,12 @@
     .recent li{color:#c9c4bb}
     .fields label,.row span{color:#cfcac2}
     .sheet{background:rgba(0,0,0,.6)}
+    /* 深色下亮绿按钮配白字只有 2.4:1，改成深字；词性用更亮的赭色 */
+    #save{color:#06201d}
+    #save:hover:not(:disabled){background:#5cc9b9}
+    #save.done{background:var(--accent-soft);color:#8fe0d2}
+    .line .pos{color:#d9a05b}
+    .error{background:#2a1512;color:#ffb4ad;border-left-color:#ff6f63}
   }
 
   @media (max-width:820px){
@@ -263,6 +285,12 @@
       <textarea id="template" rows="4" placeholder="{{word}}&#10;{{pos}} {{zh}}"></textarea>
     </label>
 
+    <div class="preview">
+      <div class="cap"><span data-i18n="previewLabel">写进词表的样子</span><span class="badge" id="presetBadge">极简</span></div>
+      <pre id="preview" hidden></pre>
+      <p class="empty" id="previewEmpty" data-i18n="previewEmpty">先查一个词，这里就能看到它会怎么写进去。</p>
+    </div>
+
     <div class="sheet-foot">
       <button id="cancelCfg" type="button" data-i18n="cancel">取消</button>
       <button id="saveCfg" class="primary" type="button" data-i18n="saveCfg">保存</button>
@@ -293,9 +321,14 @@
       presetMin: "极简", presetCard: "学习卡", presetFull: "全量",
       templateLabel: "自定义模板（留空就用上面的开关；填了就以模板为准）",
       saveCfg: "保存",
+      previewLabel: "写进词表的样子",
+      previewEmpty: "先查一个词，这里就能看到它会怎么写进去。",
+      previewFail: "预览失败：{0}",
+      presetCustom: "自定义",
       cfgSaved: "设置已保存，从下一条开始生效", cfgFailed: "保存失败：{0}",
       already: "这个词已经在词表里了", dupToast: "之前就记过了，没重复写",
       wrote: "已写入 {0}（共 {1} 条）",
+      savedToast: "已记下 · 共 {0} 条",
       undoDone: "已撤销「{0}」", undoFailed: "撤销失败：{0}",
       openFailed: "打不开：{0}",
       fields: { pos: "词性", zh: "中文释义", en: "英文原义", phonetic: "音标",
@@ -319,9 +352,14 @@
       presetMin: "Minimal", presetCard: "Study card", presetFull: "Everything",
       templateLabel: "Custom template (leave empty to use the checkboxes above)",
       saveCfg: "Save",
+      previewLabel: "What gets written",
+      previewEmpty: "Look up a word first and its entry will show up here.",
+      previewFail: "Preview failed: {0}",
+      presetCustom: "Custom",
       cfgSaved: "Settings saved; applies to the next entry", cfgFailed: "Could not save: {0}",
       already: "This word is already saved", dupToast: "Already saved earlier — nothing written",
       wrote: "Wrote to {0} ({1} entries)",
+      savedToast: "Saved · {0} entries",
       undoDone: "Undone: “{0}”", undoFailed: "Undo failed: {0}",
       openFailed: "Could not open: {0}",
       fields: { pos: "Part of speech", zh: "Chinese", en: "English", phonetic: "Phonetic",
@@ -370,6 +408,7 @@
   let canUndo = false;
   let toastTimer = null;
   let inflight = null;
+  let lookupSeq = 0;
   let cfg = { fields: { pos: true, zh: true }, template: "", lang: "auto" };
 
   function el(tag, cls, text) {
@@ -455,16 +494,17 @@
 
     card.appendChild(el("h2", "word", data.word));
 
-    const line = el("p", "line");
+    const line = el("div", "line");
     const parts = buildParts(data);
     if (!parts.length) {
       line.textContent = LANG === "zh" ? "（这个词典没给释义）" : "(no definition from the dictionary)";
       line.style.color = "#8b8b8b";
     } else {
-      parts.forEach((p, i) => {
-        if (i) line.appendChild(document.createTextNode(LANG === "zh" ? "；" : "; "));
-        if (p.pos) line.appendChild(el("span", "pos", p.pos));
-        line.appendChild(document.createTextNode(p.text));
+      parts.forEach((p) => {
+        const row = el("div", "entry-row");
+        row.appendChild(el("span", "pos", p.pos || ""));
+        row.appendChild(el("span", "def", p.text));
+        line.appendChild(row);
       });
     }
     card.appendChild(line);
@@ -524,6 +564,7 @@
 
     const controller = new AbortController();
     inflight = controller;
+    const seq = ++lookupSeq;      // 只有最新一次查询能改卡片
     busy = true;
     renderLoading(word, controller);
     const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, 30000);
@@ -533,6 +574,7 @@
         signal: controller.signal
       });
       const data = await resp.json();
+      if (seq !== lookupSeq) return;   // 被更新的查询取代，静默退出
       if (!data.ok) {
         renderError(data.error || "?", word);
         return;
@@ -542,6 +584,7 @@
       pushRecent(data.word);
       if (data.saved) toast(t("already"));
     } catch (err) {
+      if (seq !== lookupSeq) return;   // 旧请求被取消，别盖掉新界面
       if (err.name === "AbortError") renderError(t("errTimeout"), word);
       else renderError(t("errOffline", err.message), word);
     } finally {
@@ -581,7 +624,7 @@
           btn.classList.add("done");
           current.saved = true;
         }
-        toast(t("wrote", data.path, data.count));
+        toast(t("savedToast", data.count));
         canUndo = true;
         const ub = $("undoBtn");
         if (ub) ub.hidden = false;
@@ -654,6 +697,7 @@
       cb.type = "checkbox";
       cb.dataset.key = key;
       cb.checked = !!(cfg.fields && cfg.fields[key]);
+      cb.addEventListener("change", schedulePreview);
       lab.appendChild(cb);
       lab.appendChild(document.createTextNode(t("fields")[key] || key));
       box.appendChild(lab);
@@ -683,15 +727,99 @@
     return nav.indexOf("zh") === 0 ? "zh" : "en";
   }
 
+  let lastFocus = null;
+
+  function openSheet() {
+    lastFocus = document.activeElement;
+    $("sheet").hidden = false;
+    const first = $("lang");
+    if (first) first.focus();
+    schedulePreview();
+  }
+
+  function closeSheet() {
+    $("sheet").hidden = true;
+    if (lastFocus && typeof lastFocus.focus === "function") lastFocus.focus();
+  }
+
   $("settings").addEventListener("click", async () => {
     await loadCfg();
     $("lang").value = cfg.lang || "auto";
     renderFields();
     $("template").value = cfg.template || "";
-    $("sheet").hidden = false;
+    openSheet();
   });
 
-  $("cancelCfg").addEventListener("click", () => { $("sheet").hidden = true; });
+  $("cancelCfg").addEventListener("click", closeSheet);
+
+  // Tab 不跑出设置窗口
+  $("sheet").addEventListener("keydown", (ev) => {
+    if (ev.key !== "Tab") return;
+    const nodes = Array.from($("sheet").querySelectorAll("button, select, input, textarea"))
+      .filter((n) => !n.disabled && n.offsetParent !== null);
+    if (!nodes.length) return;
+    const first = nodes[0];
+    const last = nodes[nodes.length - 1];
+    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+  });
+
+  $("template").addEventListener("input", schedulePreview);
+
+  // ---------- 记录预览 ----------
+  let previewTimer = null;
+
+  function schedulePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(updatePreview, 220);
+  }
+
+  function presetLabel(fields) {
+    for (const [name, preset] of Object.entries(PRESETS)) {
+      if (FIELD_KEYS.every((k) => !!fields[k] === !!preset[k])) {
+        return t("preset" + name.charAt(0).toUpperCase() + name.slice(1));
+      }
+    }
+    return t("presetCustom");
+  }
+
+  async function updatePreview() {
+    const pre = $("preview");
+    const emptyEl = $("previewEmpty");
+    const badge = $("presetBadge");
+    if (!pre || !emptyEl || !badge) return;
+
+    const fields = readFields();
+    badge.textContent = presetLabel(fields);
+
+    if (!current) {
+      pre.hidden = true;
+      emptyEl.hidden = false;
+      emptyEl.textContent = t("previewEmpty");
+      return;
+    }
+    try {
+      const resp = await fetch(api("/api/preview"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word: current.word, fields, template: $("template").value })
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        pre.hidden = true;
+        emptyEl.hidden = false;
+        emptyEl.textContent = t("previewFail", data.error || "");
+        return;
+      }
+      pre.textContent = data.text;
+      pre.hidden = false;
+      emptyEl.hidden = true;
+    } catch (err) {
+      pre.hidden = true;
+      emptyEl.hidden = false;
+      emptyEl.textContent = t("previewFail", err.message);
+    }
+  }
 
   $("lang").addEventListener("change", (ev) => {
     cfg.lang = ev.target.value;
@@ -700,7 +828,7 @@
   });
 
   document.querySelectorAll(".presets button").forEach((b) => {
-    b.addEventListener("click", () => applyPreset(b.dataset.preset));
+    b.addEventListener("click", () => { applyPreset(b.dataset.preset); schedulePreview(); });
   });
 
   $("saveCfg").addEventListener("click", async () => {
@@ -716,7 +844,7 @@
       cfg = data.config;
       LANG = effectiveLang();
       applyI18n();
-      $("sheet").hidden = true;
+      closeSheet();
       toast(t("cfgSaved"));
     } catch (err) {
       toast(t("cfgFailed", err.message));
@@ -769,10 +897,10 @@
   });
 
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") {
-      input.value = "";
-      input.focus();
-    }
+    if (ev.key !== "Escape") return;
+    if (!$("sheet").hidden) { closeSheet(); return; }   // 设置开着先关设置
+    input.value = "";
+    input.focus();
   });
 
   // ---------- 启动 ----------

@@ -11,9 +11,9 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#环境)
 
-| 中文界面 | English UI |
-|---|---|
-| ![中文界面](assets/screenshot.png) | ![English UI](assets/screenshot-en.png) |
+| 中文界面 | English UI | 深色 |
+|---|---|---|
+| ![中文界面](assets/screenshot.png) | ![English UI](assets/screenshot-en.png) | ![深色](assets/screenshot-dark.png) |
 
 ---
 
@@ -34,7 +34,7 @@
 | **两行，默认克制** | 第一行单词，第二行「词性 + 意思」。音标、例句这些东西默认**不出现** |
 | **中英双语界面** | 设置里切「跟随系统 / 中文 / English」，即时生效；**词表里的标签**也跟着变 |
 | **双词典源** | 先问有道（中文释义），失败或未收录时自动退回 Wiktionary（英文） |
-| **记录可调** | 三档预设（极简 / 学习卡 / 全量）+ 逐项勾选 + `{{word}} {{pos}} {{zh}} …` 自定义模板 |
+| **记录可调** | 三档预设（极简 / 学习卡 / 全量）+ 逐项勾选 + `{{word}} {{pos}} {{zh}} …` 自定义模板，**改完立刻能看到写进文件的样子** |
 | **不重复** | 同一个词只记一次，重复点会提示「已在词表里」 |
 | **能撤销** | 记错了当场撤；如果你之后手动改过词表，它会**拒绝**而不是乱截 |
 | **能带走** | 导出 Anki CSV（两列：单词、释义；带 BOM，Excel 不乱码） |
