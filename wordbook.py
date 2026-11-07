@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 import argparse
 import csv
@@ -20,6 +20,7 @@ import io
 import json
 import os
 import re
+import shutil
 import socket
 import sys
 import threading
@@ -406,7 +407,7 @@ def lookup(word: str) -> dict:
         raise LookupError(detail)
 
     payload["word"] = payload.get("word") or word
-    payload["saved"] = is_saved(payload["word"])
+    payload.pop("saved", None)      # 不缓存：用户随时可能手改词表，缓存会让状态过期
 
     _cache[word] = (now, payload)
     return dict(payload)
@@ -517,13 +518,15 @@ def format_entry(payload: dict, cfg: dict | None = None, lang: str = "zh") -> st
             "forms": forms, "exam": exam, "web": web, "time": stamp,
         }
         filled = re.sub(r"\{\{\s*(\w+)\s*\}\}", lambda m: str(ctx.get(m.group(1).lower(), "")), template)
-        block = filled.rstrip()
-        # 纯文本词表靠「第一行的第一个词元」判重；模板没把单词放最前就补一行
-        first = block.splitlines()[0].strip() if block else ""
-        first_token = re.split(r"[\s|\t/]+", first, maxsplit=1)[0] if first else ""
-        if normalize_word(first_token) != normalize_word(word):
-            block = word + (("\n" + block) if block else "")
-        return _sanitize_block(block) + "\n\n"
+        body = _sanitize_block(filled)
+        lines = body.splitlines()
+        # 词表的第一行永远是单词（自动补）。模板里如果自己写了一模一样的单词行，
+        # 把重复的那行去掉；但模板只输出一行（比如 "{{word}} | {{zh}}"）时，
+        # 仍然要补单词行——否则解析器会把整行当成单词，判重和导出全乱。
+        if lines and normalize_word(lines[0].strip()) == normalize_word(word):
+            lines = lines[1:]
+        body = "\n".join(lines)
+        return _sanitize_block(word + (("\n" + body) if body else "")) + "\n\n"
 
     head = ""
     if fields.get("zh", True):
@@ -594,6 +597,40 @@ def migrate_legacy_md(txt_path: str) -> None:
     print(f"已迁移：{md_path} -> {txt_path}（原文件改名 .bak）")
 
 
+def _decodes_as(raw: bytes, encoding: str) -> bool:
+    try:
+        raw.decode(encoding)
+        return True
+    except UnicodeDecodeError:
+        return False
+
+
+def ensure_utf8(path: str) -> bool:
+    """追加前把非 UTF-8 的词表转成 UTF-8，并留一份 .bak。
+
+    GBK 文件如果直接拿 UTF-8 追加，会变成混编码的怪文件——读回来一堆乱码。
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return False
+    if not raw or _decodes_as(raw, "utf-8"):
+        return False                      # 空文件 / 本来就是 UTF-8（含 BOM）
+    if not _decodes_as(raw, "gbk"):
+        return False                      # 认不出的编码，别乱动
+    text = raw.decode("gbk")
+    try:
+        shutil.copy2(path, path + ".bak")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
 def read_notes(path: str) -> str:
     """读词表：兼容 UTF-8 BOM 与 GBK。
 
@@ -642,6 +679,8 @@ def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
         block = format_entry(payload, load_config(), lang=lang)
 
         new_file = not os.path.exists(path)
+        if not new_file and ensure_utf8(path):
+            print("词表原来是 GBK 编码，已转成 UTF-8（旧文件备份为 .bak）")
         size_before = 0 if new_file else os.path.getsize(path)
 
         # 补的分隔空行必须先算出来，撤销的基准点是「正文起点」，
@@ -1098,6 +1137,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json(502, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
                 return
+            # 收录状态每次现算：用户可能刚在别处删掉/加了词，缓存靠不住
+            payload["saved"] = is_saved(payload["word"])
             self._json(200, {"ok": True, **payload})
             return
 

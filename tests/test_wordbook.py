@@ -118,10 +118,13 @@ class TestFormat(unittest.TestCase):
         self.assertEqual(out.splitlines()[0], "serendipity")
         self.assertEqual(out.splitlines()[1], "意外发现美好事物的运气，机缘巧合")
 
-    def test_template_with_word_prefix_is_not_doubled(self):
+    def test_single_line_template_still_parses(self):
+        """{{word}} | {{zh}} 只产出一行时，单词行仍要自动补齐，否则解析器会把整行当单词。"""
         out = wordbook.format_entry(PAYLOAD, {"fields": {}, "template": "{{word}} | {{zh}}"})
-        self.assertEqual(len(out.strip().splitlines()), 1, "单词已经在行首，不该再补一行")
-        self.assertTrue(out.startswith("serendipity | "))
+        entries = wordbook.parse_entries(out)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0][0], "serendipity", "第一行必须是单词本身")
+        self.assertIn("|", entries[0][1])
 
 
     def test_template_with_blank_line_is_collapsed(self):
@@ -332,6 +335,49 @@ class TestLookupErrors(unittest.TestCase):
         with self.assertRaises(LookupError) as ctx:
             wordbook.lookup("zzzmissonly")
         self.assertNotIsInstance(ctx.exception, wordbook.LookupNetworkError)
+
+
+class TestEncoding(unittest.TestCase):
+    def test_gbk_file_is_converted_on_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.txt")
+            with open(path, "wb") as fh:
+                fh.write("apple\nn. 苹果\n".encode("gbk"))
+            self.assertTrue(wordbook.ensure_utf8(path))
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            raw.decode("utf-8")                      # 不抛异常就说明已经是 UTF-8
+            self.assertTrue(os.path.exists(path + ".bak"))
+
+    def test_utf8_file_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.txt")
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("apple\nn. 苹果\n")
+            self.assertFalse(wordbook.ensure_utf8(path))
+
+    def test_bom_file_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.txt")
+            with open(path, "w", encoding="utf-8-sig", newline="\n") as fh:
+                fh.write("apple\nn. 苹果\n")
+            self.assertFalse(wordbook.ensure_utf8(path))
+
+
+class TestLookupCache(unittest.TestCase):
+    def test_saved_is_not_cached(self):
+        """收录状态不能进缓存——用户随时可能在别处删词。"""
+        real = wordbook.lookup_youdao
+        wordbook.lookup_youdao = lambda w: {
+            "word": "zzcache", "entries": [], "examples": [], "forms": [],
+            "exam": [], "web": [], "uk": "", "us": "", "phonetic": "", "source": "test",
+        }
+        try:
+            out = wordbook.lookup("zzcache")
+        finally:
+            wordbook.lookup_youdao = real
+            wordbook._cache.clear()
+        self.assertNotIn("saved", out)
 
 
 class TestSameSite(unittest.TestCase):
