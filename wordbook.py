@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 
 import argparse
 import csv
@@ -352,6 +352,8 @@ def lookup(word: str) -> dict:
         payload = lookup_youdao(word)
     except urllib.error.HTTPError as exc:
         errors.append(f"有道 HTTP {exc.code}")
+        if exc.code >= 500 or exc.code == 429:
+            net_failed = True          # 服务故障/限流，不是「没收录」
     except (urllib.error.URLError, socket.timeout, TimeoutError):
         errors.append("有道连接失败")
         net_failed = True
@@ -363,6 +365,8 @@ def lookup(word: str) -> dict:
             payload = lookup_wiktionary(word)
         except urllib.error.HTTPError as exc:
             errors.append(f"wiktionary HTTP {exc.code}")
+            if exc.code >= 500 or exc.code == 429:
+                net_failed = True
         except (urllib.error.URLError, socket.timeout, TimeoutError):
             errors.append("wiktionary 连接失败")
             net_failed = True
@@ -682,7 +686,7 @@ def undo_last(lang: str = "zh") -> dict:
         _cache.pop(word, None)
         count = 0
         if os.path.exists(path):
-            count = len(re.findall(r"^##\s+\S", read_notes(path), re.MULTILINE))
+            count = len(parse_entries(read_notes(path)))
         return {"ok": True, "word": word, "count": count}
 
 
@@ -812,7 +816,7 @@ MESSAGES = {
         "empty": "先输入一个单词",
         "bad_word": "只认单词或短语，别塞奇怪字符",
         "not_found": "两个词典都没收录",
-        "net_error": "连不上词典（网络问题，不是这个词的问题）",
+        "net_error": "词典暂时不可用（网络或服务异常，不是这个词的问题）",
         "cross_site": "拒绝跨站请求",
         "no_api": "没这个接口",
         "bad_json": "请求体不是 JSON",
@@ -829,7 +833,7 @@ MESSAGES = {
         "empty": "Type a word first",
         "bad_word": "Only words or short phrases, please",
         "not_found": "Neither dictionary has this word",
-        "net_error": "Could not reach the dictionaries (network issue, not the word)",
+        "net_error": "The dictionaries are unavailable (network or service issue, not the word)",
         "cross_site": "Cross-site request rejected",
         "no_api": "No such endpoint",
         "bad_json": "Request body is not JSON",
@@ -1058,7 +1062,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "path": NOTES_PATH,
                 "exists": os.path.exists(NOTES_PATH),
-                "count": len(re.findall(r"^##\s+\S", read_notes(NOTES_PATH), re.MULTILINE)),
+                "count": len(parse_entries(read_notes(NOTES_PATH))),
             }
             self._json(200, payload)
             return

@@ -227,6 +227,25 @@ class TestUndo(unittest.TestCase):
                 # 撤销回到「本条正文起点」，也就是补的那个空行之后
                 self.assertEqual(fh.read(), head + prefix)
 
+    def test_undo_reports_remaining_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.txt")
+            head = "run\nv. 跑\n\n"
+            block = "lucid\nadj. 明晰的\n\n"
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(head + block)
+            wordbook._UNDO.clear()
+            wordbook._UNDO.update({
+                "path": path,
+                "size": len(head.encode("utf-8")),
+                "word": "lucid",
+                "block": block,
+                "after": os.path.getsize(path),
+            })
+            result = wordbook.undo_last()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["count"], 1, "撤掉一条后应剩 1 条，不是 0")
+
     def test_undo_without_state(self):
         wordbook._UNDO.clear()
         self.assertFalse(wordbook.undo_last()["ok"])
@@ -278,6 +297,13 @@ class TestLookupErrors(unittest.TestCase):
         wordbook.fetch_json = boom
         with self.assertRaises(wordbook.LookupNetworkError):
             wordbook.lookup("zzznetonly")
+
+    def test_http_503_is_service_error(self):
+        def boom(url, timeout=0):
+            raise urllib.error.HTTPError(url, 503, "Service Unavailable", {}, None)
+        wordbook.fetch_json = boom
+        with self.assertRaises(wordbook.LookupNetworkError):
+            wordbook.lookup("zzz503only")
 
     def test_empty_results_are_not_found(self):
         wordbook.fetch_json = lambda url, timeout=0: {}

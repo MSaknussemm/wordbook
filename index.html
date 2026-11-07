@@ -553,13 +553,16 @@
 
   async function saveWord(btn) {
     if (!current) return;
+    // 绑定「点下去的那一刻」的词。请求期间用户可能已经查了别的词，
+    // 响应回来时必须只更新这个词，绝不能改 current（那可能是另一个词）
+    const target = current.word;
     btn.disabled = true;
     btn.textContent = t("saving");
     try {
       const resp = await fetch(api("/api/save"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ word: current.word })
+        body: JSON.stringify({ word: target })
       });
       const data = await resp.json();
       if (!data.ok) {
@@ -568,21 +571,24 @@
         toast(data.error || "?");
         return;
       }
+      const stillHere = current && current.word === target;
       if (data.duplicate) {
-        btn.textContent = t("saved");
+        if (stillHere) { btn.textContent = t("saved"); current.saved = true; }
         toast(t("dupToast"));
       } else {
-        btn.textContent = t("savedOk");
-        btn.classList.add("done");
+        if (stillHere) {
+          btn.textContent = t("savedOk");
+          btn.classList.add("done");
+          current.saved = true;
+        }
+        toast(t("wrote", data.path, data.count));
         canUndo = true;
         const ub = $("undoBtn");
         if (ub) ub.hidden = false;
-        toast(t("wrote", data.path, data.count));
       }
       const saved = new Set(loadStored(SAVED_KEY));
-      saved.add(current.word);
+      saved.add(target);              // 记的是真正写进文件的那个词
       store(SAVED_KEY, [...saved]);
-      current.saved = true;
       renderRecent();
     } catch (err) {
       btn.disabled = false;
@@ -603,10 +609,14 @@
       canUndo = false;
       btn.hidden = true;
       toast(t("undoDone", data.word));
+      // 撤销后「最近查过」里的已保存标记也要一起清掉，否则刷新后还在骗人
+      const saved = new Set(loadStored(SAVED_KEY));
+      if (saved.delete(data.word)) store(SAVED_KEY, [...saved]);
       if (current && current.word === data.word) {
         current.saved = false;
         render(current);
       }
+      renderRecent();
     } catch (err) {
       toast(t("undoFailed", err.message));
     } finally {
