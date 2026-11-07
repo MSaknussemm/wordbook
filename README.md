@@ -1,6 +1,6 @@
 # 生词本 · Wordbook
 
-**一个只跑在本机的极简生词本：左边查词，右边两行，点「记下」就写进桌面的 Markdown 文件。**
+**一个只跑在本机的极简生词本：左边查词，右边两行，点「记下」就写进桌面的纯文本文件。**
 
 *A local-first English → Chinese vocabulary notebook for Windows. Zero dependencies, no account, no cloud.*
 
@@ -22,10 +22,10 @@
 市面上的背单词软件太重，词典工具又要么只做划词、要么逼你上云。我想要的很窄：
 
 - 读到不认识的词，**查一下**；
-- 觉得值得记，**点一下**，它就变成 `词表.md` 里的一条；
+- 觉得值得记，**点一下**，它就变成 `词表.txt` 里的一条；
 - 不想记的，查多少次都不留痕。
 
-没有账号、没有同步、没有复习算法、没有推荐。就是一个查词框加一个 Markdown 文件。
+没有账号、没有同步、没有复习算法、没有推荐。就是一个查词框加一个文本文件。
 
 ## 特性
 
@@ -60,7 +60,7 @@ cd wordbook
 3. 想换图标：右键快捷方式 → 属性 → 更改图标 → 选 `生词本.ico`
 4. 双击桌面图标，浏览器会自己打开
 
-词表默认写到 `桌面\词表.md`。想换位置：
+词表默认写到 `桌面\词表.txt`。想换位置：
 
 ```powershell
 python wordbook.py --file "D:\notes\我的生词.md"
@@ -76,43 +76,43 @@ python wordbook.py --file "D:\notes\我的生词.md"
 | `Esc` | 清空输入框 |
 | `⚙ 记录设置` | 选字段 / 模板 / **界面语言** |
 | `撤销上一条` | 撤掉刚记的那条 |
-| `打开词表` | 用系统默认程序打开 `词表.md` |
+| `打开词表` | 用系统默认程序打开 `词表.txt` |
 | `导出 Anki` | 下载 CSV |
 
 ## 记成什么样
 
 默认只有两行：
 
-```markdown
-## serendipity
+```text
+serendipity
 n. 意外发现美好事物的运气，机缘巧合
 ```
 
 打开「学习卡」预设后：
 
-```markdown
-## ephemeral
+```text
+ephemeral
 adj. 短暂的；（主指植物）短生的，短命的；n. 只生存一天的事物；短生植物
-- **音标**：UK /ɪˈfemərəl/ · US /ɪˈfemərəl/
-- **例句**：
-  - He talked about the country's ephemeral unity being shattered by the defeat.
-    - 他谈到战败彻底粉碎了国家的短暂统一。
+音标：UK /ɪˈfemərəl/ · US /ɪˈfemərəl/
+例句：
+  He talked about the country's ephemeral unity being shattered by the defeat.
+  他谈到战败彻底粉碎了国家的短暂统一。
 ```
 
 自定义模板（`⚙ 记录设置` → 模板框）：
 
-```markdown
+```text
 {{word}}	{{pos}}	{{zh}}
 ```
 
 可用占位符：`{{word}} {{pos}} {{zh}} {{en}} {{phonetic}} {{examples}} {{forms}} {{exam}} {{web}} {{time}}`。
-带空格也认（`{{ word }}`）。模板里不用写 `## 单词`，程序会自动补——判重和导出靠它。
+带空格也认（`{{ word }}`）。词条第一行必须是单词（漏了程序会补），判重和导出靠它。
 
 ## 运行时文件
 
 | 路径 | 作用 |
 |---|---|
-| `桌面\词表.md` | 你的词表（纯文本，随便备份） |
+| `桌面\词表.txt` | 你的词表（纯文本，随便备份） |
 | `%LOCALAPPDATA%\Wordbook\config.json` | 记录设置（字段 / 模板） |
 | `%LOCALAPPDATA%\Wordbook\port.txt` | 当前真实端口 |
 
@@ -163,7 +163,7 @@ python -m unittest discover -s tests -v   # 26 个测试，纯离线
 python wordbook.py --version
 ```
 
-测试覆盖：输入校验、Markdown 生成（字段开关 / 模板 / 多词性）、CSV 导出与注入防护、撤销的三重校验、`Host`/`Origin` 判定、端口探测与独占绑定。
+测试覆盖：输入校验、词条生成（字段开关 / 模板 / 多词性）、CSV 导出与注入防护、撤销的三重校验、`Host`/`Origin` 判定、端口探测与独占绑定。
 
 CI 在 Windows 上跑 Python 3.10 / 3.11 / 3.12 三档。贡献前请看 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
@@ -171,7 +171,7 @@ CI 在 Windows 上跑 Python 3.10 / 3.11 / 3.12 三档。贡献前请看 [CONTRI
 
 ```
 wordbook/
-├─ wordbook.py              # 后端：查词、解析、写 Markdown、自动退出
+├─ wordbook.py              # 后端：查词、解析、写纯文本词表、自动退出
 ├─ index.html               # 前端：左右分栏、查询、记下、设置
 ├─ 启动词本.vbs              # 无窗口启动器（快捷方式指向它）
 ├─ 启动词本(排错用).bat       # 带黑窗口启动，出问题看报错

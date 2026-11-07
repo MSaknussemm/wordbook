@@ -73,48 +73,70 @@ class TestInput(unittest.TestCase):
         self.assertFalse(wordbook.WORD_RE.match("123"))
 
 
-class TestMarkdown(unittest.TestCase):
-    def test_default_is_two_lines(self):
-        out = wordbook.to_markdown(PAYLOAD, cfg())
+class TestFormat(unittest.TestCase):
+    def test_default_is_two_plain_lines(self):
+        out = wordbook.format_entry(PAYLOAD, cfg())
         lines = out.rstrip("\n").splitlines()
-        self.assertEqual(lines[0], "## serendipity")
-        self.assertEqual(lines[1], "n. 意外发现美好事物的运气，机缘巧合")
-        self.assertEqual(len(lines), 2, "默认只应该有两行")
+        self.assertEqual(lines, ["serendipity", "n. 意外发现美好事物的运气，机缘巧合"])
+        self.assertNotIn("##", out)
+        self.assertNotIn("**", out)
 
     def test_pos_off(self):
-        out = wordbook.to_markdown(PAYLOAD, cfg(pos=False))
+        out = wordbook.format_entry(PAYLOAD, cfg(pos=False))
         self.assertEqual(out.splitlines()[1], "意外发现美好事物的运气，机缘巧合")
 
     def test_zh_off_drops_chinese_line(self):
-        out = wordbook.to_markdown(PAYLOAD, cfg(zh=False, en=True))
+        out = wordbook.format_entry(PAYLOAD, cfg(zh=False, en=True))
+        self.assertEqual(out.splitlines()[0], "serendipity")
+        self.assertIn("英文：", out)
         self.assertNotIn("意外发现", out)
-        self.assertIn("- **英文**", out)
 
-    def test_extra_fields(self):
-        out = wordbook.to_markdown(
+    def test_extra_fields_are_plain_labels(self):
+        out = wordbook.format_entry(
             PAYLOAD, cfg(phonetic=True, examples=True, forms=True, exam=True, web=True, time=True)
         )
-        for marker in ("- **音标**", "- **例句**", "- **变形**", "- **考试**", "- **网络释义**", "- **收录**"):
+        for marker in ("音标：", "例句：", "变形：", "考试：", "网络释义：", "收录："):
             self.assertIn(marker, out)
+        self.assertNotIn("- **", out)
 
     def test_multi_pos_keeps_pairing(self):
-        line = wordbook.to_markdown(MULTI_POS, cfg()).splitlines()[1]
+        line = wordbook.format_entry(MULTI_POS, cfg()).splitlines()[1]
         self.assertEqual(line, "adj. 短暂的；n. 短生植物")
 
     def test_template_with_spaces(self):
-        out = wordbook.to_markdown(PAYLOAD, {"fields": {}, "template": "## {{ word }}\n- {{ zh }}"})
-        self.assertIn("## serendipity", out)
+        out = wordbook.format_entry(PAYLOAD, {"fields": {}, "template": "{{ word }}\t{{ zh }}"})
+        self.assertTrue(out.startswith("serendipity"))
         self.assertNotIn("{{", out)
 
-    def test_template_gets_heading_added(self):
-        out = wordbook.to_markdown(PAYLOAD, {"fields": {}, "template": "{{word}} | {{zh}}"})
-        lines = out.strip().splitlines()
-        self.assertEqual(lines[0], "## serendipity", "模板缺 ## 时要自动补，否则判重和导出都认不出来")
-        self.assertTrue(lines[1].startswith("serendipity | "))
+    def test_template_without_word_line_gets_one(self):
+        out = wordbook.format_entry(PAYLOAD, {"fields": {}, "template": "{{zh}}"})
+        self.assertEqual(out.splitlines()[0], "serendipity", "模板丢了单词行，判重会认不出来")
 
-    def test_template_keeps_existing_heading(self):
-        out = wordbook.to_markdown(PAYLOAD, {"fields": {}, "template": "## {{word}}\n- {{zh}}"})
-        self.assertEqual(out.count("## serendipity"), 1)
+    def test_template_keeping_word_first_has_no_duplicate(self):
+        out = wordbook.format_entry(PAYLOAD, {"fields": {}, "template": "{{word}}\n{{zh}}"})
+        self.assertEqual(out.splitlines()[0], "serendipity")
+        self.assertEqual(out.splitlines()[1], "意外发现美好事物的运气，机缘巧合")
+
+
+class TestParse(unittest.TestCase):
+    def test_parse_entries(self):
+        text = "run\nv. 跑\n\nserendipity\nn. 意外发现\n\n"
+        self.assertEqual(wordbook.parse_entries(text),
+                         [("run", "v. 跑"), ("serendipity", "n. 意外发现")])
+
+    def test_parse_skips_blank_and_extra_lines(self):
+        text = "run\nv. 跑\n音标：/rʌn/\n\n\nlucid\nadj. 明晰的\n"
+        entries = wordbook.parse_entries(text)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0][0], "run")
+
+    def test_is_saved_uses_first_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.txt")
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("Run\nv. 跑\n")
+            self.assertTrue(wordbook.is_saved("run", path))
+            self.assertFalse(wordbook.is_saved("lucid", path))
 
 
 class TestCsv(unittest.TestCase):
@@ -124,11 +146,11 @@ class TestCsv(unittest.TestCase):
         self.assertEqual(wordbook._csv_safe("@x"), "'@x")
         self.assertEqual(wordbook._csv_safe("普通"), "普通")
 
-    def test_export_skips_examples(self):
+    def test_export_takes_second_line_only(self):
         with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "notes.md")
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write("# 生词本\n\n## serendipity\nn. 意外发现\n- **音标**：x\n  - example sentence\n")
+            path = os.path.join(d, "notes.txt")
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("serendipity\nn. 意外发现\n音标：/x/\n  例句一行\n\n")
             old = wordbook.NOTES_PATH
             wordbook.NOTES_PATH = path
             try:
@@ -136,25 +158,18 @@ class TestCsv(unittest.TestCase):
             finally:
                 wordbook.NOTES_PATH = old
             self.assertIn("serendipity,n. 意外发现", text)
-            self.assertNotIn("example sentence", text)
+            self.assertNotIn("例句一行", text)
 
 
 class TestUndo(unittest.TestCase):
     def _seed(self, directory: str):
-        path = os.path.join(directory, "notes.md")
-        # newline="" 很关键：默认文本模式在 Windows 会把 \n 翻成 \r\n，
-        # 字节数就和 HEADER.encode() 对不上，撤销会（正确地）拒绝。
+        path = os.path.join(directory, "notes.txt")
+        block = "lucid\nadj. 明晰的\n\n"
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(wordbook.HEADER)
-        block = "## lucid\nadj. 明晰的\n\n"
-        with open(path, "a", encoding="utf-8", newline="\n") as fh:
             fh.write(block)
         wordbook._UNDO.clear()
         wordbook._UNDO.update({
-            "path": path,
-            "size": len(wordbook.HEADER.encode("utf-8")),
-            "word": "lucid",
-            "block": block,
+            "path": path, "size": 0, "word": "lucid", "block": block,
             "after": os.path.getsize(path),
         })
         return path
@@ -164,23 +179,50 @@ class TestUndo(unittest.TestCase):
             path = self._seed(d)
             result = wordbook.undo_last()
             self.assertTrue(result["ok"])
-            self.assertFalse(os.path.exists(path), "撤到只剩标题头时应该把文件收掉")
+            self.assertFalse(os.path.exists(path), "撤到空文件时应该收掉")
 
     def test_undo_refuses_after_manual_edit(self):
         with tempfile.TemporaryDirectory() as d:
             path = self._seed(d)
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write("## manual\n手写的\n\n")
+            with open(path, "a", encoding="utf-8", newline="\n") as fh:
+                fh.write("manual\n手写的\n\n")
             result = wordbook.undo_last()
             self.assertFalse(result["ok"])
             with open(path, encoding="utf-8") as fh:
                 body = fh.read()
-            self.assertIn("## manual", body)
-            self.assertIn("## lucid", body)
+            self.assertIn("manual", body)
+            self.assertIn("lucid", body)
 
     def test_undo_without_state(self):
         wordbook._UNDO.clear()
         self.assertFalse(wordbook.undo_last()["ok"])
+
+
+class TestMigration(unittest.TestCase):
+    def test_md_is_converted_to_txt(self):
+        with tempfile.TemporaryDirectory() as d:
+            md = os.path.join(d, "词表.md")
+            txt = os.path.join(d, "词表.txt")
+            with open(md, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("# 生词本\n\n> 说明\n\n## run\nv. 跑\n- **音标**：/rʌn/\n\n")
+            wordbook.migrate_legacy_md(txt)
+            self.assertTrue(os.path.exists(txt))
+            with open(txt, encoding="utf-8") as fh:
+                body = fh.read()
+            self.assertIn("run\nv. 跑\n音标：/rʌn/", body)
+            self.assertNotIn("##", body)
+            self.assertFalse(os.path.exists(md), "原 md 应改名")
+            self.assertTrue(os.path.exists(md + ".bak"))
+
+    def test_does_not_touch_existing_txt(self):
+        with tempfile.TemporaryDirectory() as d:
+            md = os.path.join(d, "词表.md")
+            txt = os.path.join(d, "词表.txt")
+            open(md, "w", encoding="utf-8").write("## old\nv. 旧\n")
+            open(txt, "w", encoding="utf-8").write("new\nn. 新\n")
+            wordbook.migrate_legacy_md(txt)
+            with open(txt, encoding="utf-8") as fh:
+                self.assertIn("new", fh.read())
 
 
 class TestSameSite(unittest.TestCase):
@@ -252,17 +294,19 @@ class TestConfig(unittest.TestCase):
         self.assertIn("fields", parsed)
         self.assertTrue(parsed["fields"]["zh"])
         self.assertEqual(parsed["template"], "")
+        self.assertEqual(parsed["lang"], "auto")
 
     def test_roundtrip(self):
         old = wordbook.CONFIG_PATH
         with tempfile.TemporaryDirectory() as d:
             wordbook.CONFIG_PATH = os.path.join(d, "config.json")
             try:
-                wordbook.save_config({"fields": {"zh": False, "en": True}, "template": "{{word}}"})
+                wordbook.save_config({"fields": {"zh": False, "en": True}, "template": "{{word}}", "lang": "en"})
                 parsed = wordbook.load_config()
                 self.assertFalse(parsed["fields"]["zh"])
                 self.assertTrue(parsed["fields"]["en"])
                 self.assertEqual(parsed["template"], "{{word}}")
+                self.assertEqual(parsed["lang"], "en")
             finally:
                 wordbook.CONFIG_PATH = old
 
@@ -272,16 +316,11 @@ class TestI18n(unittest.TestCase):
         self.assertEqual(wordbook.LABELS["zh"]["phonetic"], "音标")
         self.assertEqual(wordbook.LABELS["en"]["phonetic"], "Phonetic")
 
-    def test_headers_are_localized(self):
-        self.assertTrue(wordbook.HEADERS["zh"].startswith("# 生词本"))
-        self.assertTrue(wordbook.HEADERS["en"].startswith("# Wordbook"))
-        self.assertEqual(wordbook.HEADER, wordbook.HEADERS["zh"])
-
-    def test_markdown_labels_follow_lang(self):
-        out = wordbook.to_markdown(PAYLOAD, cfg(phonetic=True), lang="en")
-        self.assertIn("- **Phonetic**：", out)
-        out_zh = wordbook.to_markdown(PAYLOAD, cfg(phonetic=True), lang="zh")
-        self.assertIn("- **音标**：", out_zh)
+    def test_entry_labels_follow_lang(self):
+        out_en = wordbook.format_entry(PAYLOAD, cfg(phonetic=True), lang="en")
+        self.assertIn("Phonetic：", out_en)
+        out_zh = wordbook.format_entry(PAYLOAD, cfg(phonetic=True), lang="zh")
+        self.assertIn("音标：", out_zh)
 
     def test_resolve_lang_priority(self):
         self.assertEqual(wordbook.resolve_lang("en", "zh-CN", {"lang": "zh"}), "en")

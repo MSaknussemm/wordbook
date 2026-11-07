@@ -1,8 +1,8 @@
 # Wordbook · 生词本
 
-**A local-first English → Chinese vocabulary notebook for Windows. Two lines per word, written straight into a Markdown file on your desktop.**
+**A local-first English → Chinese vocabulary notebook for Windows. Two lines per word, written straight into a plain-text file on your desktop.**
 
-*一个只跑在本机的极简生词本：左边查词，右边两行，点「记下」就写进桌面的 Markdown 文件。*
+*一个只跑在本机的极简生词本：左边查词，右边两行，点「记下」就写进桌面的纯文本文件。*
 
 [简体中文](README.md) | **English**
 
@@ -22,10 +22,10 @@
 Vocabulary apps are heavy. Dictionary tools either only do pop-up translation or push you into a cloud account. What I wanted was narrow:
 
 - Look a word up while reading;
-- Click once to keep it, and it becomes one entry in `词表.md`;
+- Click once to keep it, and it becomes one entry in `词表.txt`;
 - Don't click, and it leaves no trace.
 
-No account, no sync, no spaced repetition, no recommendations. Just a lookup box and a Markdown file.
+No account, no sync, no spaced repetition, no recommendations. Just a lookup box and a plain-text file.
 
 > The interface is Chinese-first. The code, tests and this document are readable without Chinese; only the bundled launcher scripts and UI strings are in Chinese.
 
@@ -34,7 +34,7 @@ No account, no sync, no spaced repetition, no recommendations. Just a lookup box
 | | |
 |---|---|
 | **Two lines, by default** | Word on line one, part of speech + meaning on line two. Phonetics and examples stay hidden unless you ask |
-| **Bilingual UI** | Switch between Follow system / 中文 / English in settings; the **labels inside the Markdown file** follow too |
+| **Bilingual UI** | Switch between Follow system / 中文 / English in settings; the **labels inside the text file** follow too |
 | **Two dictionary sources** | Youdao (Chinese) first, falling back to Wiktionary (English) when it fails or misses the word |
 | **Configurable entries** | Three presets (minimal / study card / everything), per-field checkboxes, or a `{{word}} {{pos}} {{zh}} …` template |
 | **Deduplicated** | A word is only recorded once |
@@ -62,7 +62,7 @@ cd wordbook
 3. Optional: right-click the shortcut → Properties → Change Icon → pick `生词本.ico`
 4. Double-click the desktop icon — your browser opens by itself
 
-Entries are written to `Desktop\词表.md` by default. To change that:
+Entries are written to `Desktop\词表.txt` by default. To change that:
 
 ```powershell
 python wordbook.py --file "D:\notes\my-words.md"
@@ -80,27 +80,27 @@ The file name is configurable but the UI strings are Chinese; if you want an Eng
 | `Esc` | Clear the input |
 | `⚙` | Entry settings: fields, template and **interface language** |
 | `撤销上一条` | Undo the last saved entry |
-| `打开词表` | Open the Markdown file |
+| `打开词表` | Open the text file |
 | `导出 Anki` | Download the CSV |
 
 ## What an entry looks like
 
 Default — two lines:
 
-```markdown
-## serendipity
+```text
+serendipity
 n. 意外发现美好事物的运气，机缘巧合
 ```
 
 With the "study card" preset:
 
-```markdown
-## ephemeral
+```text
+ephemeral
 adj. 短暂的；（主指植物）短生的，短命的；n. 只生存一天的事物；短生植物
-- **音标**：UK /ɪˈfemərəl/ · US /ɪˈfemərəl/
-- **例句**：
-  - He talked about the country's ephemeral unity being shattered by the defeat.
-    - 他谈到战败彻底粉碎了国家的短暂统一。
+Phonetic：UK /ɪˈfemərəl/ · US /ɪˈfemərəl/
+Examples：
+  He talked about the country's ephemeral unity being shattered by the defeat.
+  他谈到战败彻底粉碎了国家的短暂统一。
 ```
 
 Custom template placeholders: `{{word}} {{pos}} {{zh}} {{en}} {{phonetic}} {{examples}} {{forms}} {{exam}} {{web}} {{time}}`.
@@ -110,7 +110,7 @@ Whitespace inside braces is fine (`{{ word }}`). A `## word` heading is added au
 
 | Path | Purpose |
 |---|---|
-| `Desktop\词表.md` | Your word list (plain text) |
+| `Desktop\词表.txt` | Your word list (plain text) |
 | `%LOCALAPPDATA%\Wordbook\config.json` | Entry settings (fields / template) |
 | `%LOCALAPPDATA%\Wordbook\port.txt` | The port actually in use |
 
@@ -161,7 +161,7 @@ python -m unittest discover -s tests -v   # 26 offline tests
 python wordbook.py --version
 ```
 
-Coverage: input validation, Markdown generation (field toggles / templates / multi-POS), CSV export and injection guards, the three-way undo check, `Host`/`Origin` decisions, port probing and exclusive binding.
+Coverage: input validation, entry generation (field toggles / templates / multi-POS), CSV export and injection guards, the three-way undo check, `Host`/`Origin` decisions, port probing and exclusive binding.
 
 CI runs Python 3.10 / 3.11 / 3.12 on `windows-latest`. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
 

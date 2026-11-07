@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import argparse
 import csv
@@ -415,8 +415,11 @@ def _examples_text(payload: dict, limit: int = 3) -> str:
     return "\n".join(out)
 
 
-def to_markdown(payload: dict, cfg: dict | None = None, lang: str = "zh") -> str:
-    """按配置拼词条。默认仍然是两行：单词 +「词性 意思」。"""
+def format_entry(payload: dict, cfg: dict | None = None, lang: str = "zh") -> str:
+    """生成一条纯文本词条：第一行单词，第二行「词性 意思」，后面按需追加。
+
+    不写任何 Markdown 标记——记事本打开就是干净的笔记。
+    """
     cfg = cfg or load_config()
     fields = cfg.get("fields") or {}
     template = (cfg.get("template") or "").strip()
@@ -450,37 +453,79 @@ def to_markdown(payload: dict, cfg: dict | None = None, lang: str = "zh") -> str
         }
         filled = re.sub(r"\{\{\s*(\w+)\s*\}\}", lambda m: str(ctx.get(m.group(1).lower(), "")), template)
         block = filled.rstrip()
-        # 模板里没写 ## 标题时替它补上：判重、撤销、导出 Anki 都靠这个标记
-        if not block.lstrip().startswith("## "):
-            block = f"## {word}\n{block}"
+        # 纯文本词表靠「第一行是单词」判重；模板没把单词放第一行就补上
+        first = block.splitlines()[0].strip() if block else ""
+        if normalize_word(first) != normalize_word(word):
+            block = word + (("\n" + block) if block else "")
         return block + "\n\n"
 
     head = ""
     if fields.get("zh", True):
         head = _meaning_line(payload, show_pos=bool(fields.get("pos", True)))
-    lines = [f"## {word}"]
+    lines = [word]
     if head:
         lines.append(head)
 
     if fields.get("en") and en:
-        lines.append(f"- **{lab['en']}**：{en}")
+        lines.append(f"{lab['en']}：{en}")
     if fields.get("phonetic") and phone_text:
-        lines.append(f"- **{lab['phonetic']}**：{phone_text}")
+        lines.append(f"{lab['phonetic']}：{phone_text}")
     if fields.get("examples") and examples:
-        lines.append(f"- **{lab['examples']}**：")
-        lines.extend("  " + line for line in examples.splitlines())
+        lines.append(f"{lab['examples']}：")
+        for line in examples.splitlines():
+            text = line.strip()
+            if text.startswith("- "):
+                text = text[2:]
+            if text:
+                lines.append("  " + text)
     if fields.get("forms") and forms:
-        lines.append(f"- **{lab['forms']}**：{forms}")
+        lines.append(f"{lab['forms']}：{forms}")
     if fields.get("exam") and exam:
-        lines.append(f"- **{lab['exam']}**：{exam}")
+        lines.append(f"{lab['exam']}：{exam}")
     if fields.get("web") and web:
-        lines.append(f"- **{lab['web']}**：{web}")
+        lines.append(f"{lab['web']}：{web}")
     if fields.get("time"):
-        lines.append(f"- **{lab['time']}**：{stamp}")
+        lines.append(f"{lab['time']}：{stamp}")
     return "\n".join(lines) + "\n\n"
 
 
 
+
+
+def migrate_legacy_md(txt_path: str) -> None:
+    """把旧的 词表.md 迁成 词表.txt（一次性；原文件改名为 .bak 留着）。"""
+    md_path = os.path.splitext(txt_path)[0] + ".md"
+    if os.path.exists(txt_path) or not os.path.exists(md_path):
+        return
+
+    text = read_notes(md_path)
+    entries = []
+    for block in re.split(r"(?m)^##\s+", text)[1:]:
+        lines = [line.rstrip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        word = lines[0].strip()
+        body = []
+        for line in lines[1:]:
+            stripped = line.strip()
+            m = re.match(r"^-\s+\*\*(.+?)\*\*：(.*)$", stripped)
+            if m:
+                body.append(f"{m.group(1)}：{m.group(2)}")
+            elif stripped.startswith("- "):
+                body.append("  " + stripped[2:])
+            else:
+                body.append(stripped)
+        entries.append(word + (("\n" + "\n".join(body)) if body else ""))
+
+    if not entries:
+        return
+    with open(txt_path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n\n".join(entries) + "\n")
+    try:
+        os.replace(md_path, md_path + ".bak")
+    except OSError:
+        pass
+    print(f"已迁移：{md_path} -> {txt_path}（原文件改名 .bak）")
 
 
 def read_notes(path: str) -> str:
@@ -490,13 +535,23 @@ def read_notes(path: str) -> str:
         return fh.read()
 
 
+def parse_entries(text: str) -> list[tuple[str, str]]:
+    """纯文本词表：空行分块，第一行是单词，第二行是释义。"""
+    entries = []
+    for block in re.split(r"\n\s*\n", (text or "").strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        word = lines[0]
+        meaning = lines[1] if len(lines) > 1 else ""
+        entries.append((word, meaning))
+    return entries
+
+
 def is_saved(word: str, path: str | None = None) -> bool:
     path = path or NOTES_PATH
-    text = read_notes(path)
-    if not text:
-        return False
-    pattern = re.compile(rf"^##\s+{re.escape(word)}\s*$", re.MULTILINE | re.IGNORECASE)
-    return bool(pattern.search(text))
+    target = normalize_word(word)
+    return any(normalize_word(w) == target for w, _ in parse_entries(read_notes(path)))
 
 
 def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
@@ -507,22 +562,21 @@ def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
             return {"ok": True, "duplicate": True, "path": path}
 
         payload = lookup(word)
-        block = to_markdown(payload, load_config(), lang=lang)
-        header = HEADERS.get(lang, HEADERS["zh"])
+        block = format_entry(payload, load_config(), lang=lang)
 
         new_file = not os.path.exists(path)
-        # 新建文件时，撤销点要落在「标题头之后」，否则会把整个文件删掉
-        size_before = len(header.encode("utf-8")) if new_file else os.path.getsize(path)
+        size_before = 0 if new_file else os.path.getsize(path)
         with open(path, "a", encoding="utf-8", newline="\n") as fh:
-            if new_file:
-                fh.write(header)
-            else:
+            if not new_file:
                 existing = read_notes(path)
-                if existing and not existing.endswith("\n"):
-                    fh.write("\n")
+                if existing.strip():
+                    if not existing.endswith("\n"):
+                        fh.write("\n\n")          # 上一条没换行收尾，补个空行
+                    elif not existing.endswith("\n\n"):
+                        fh.write("\n")            # 只有单个换行，补成空行
             fh.write(block)
 
-        count = len(re.findall(r"^##\s+\S", read_notes(path), re.MULTILINE))
+        count = len(parse_entries(read_notes(path)))
         _cache.pop(word, None)   # 缓存里还留着 saved=False，不失效会让界面反复横跳
 
         # 记住写之前/之后的长度和写进去的那一段：撤销时三者都要对得上才敢动
@@ -575,19 +629,12 @@ def undo_last(lang: str = "zh") -> dict:
         with open(path, "r+b") as fh:
             fh.truncate(size)
 
-        # 撤完只剩标题头的话，干脆把空文件收掉
-        # 注意：Windows 上文件还开着就删不掉，必须先读完、关掉、再删
-        only_header = False
+        # 撤完变成空文件就收掉
         try:
-            with open(path, "r", encoding="utf-8") as fh:
-                only_header = fh.read() in HEADERS.values()
-        except OSError:
-            only_header = False
-        if only_header:
-            try:
+            if os.path.getsize(path) == 0:
                 os.remove(path)
-            except OSError:
-                pass
+        except OSError:
+            pass
 
         _cache.pop(word, None)
         count = 0
@@ -598,24 +645,7 @@ def undo_last(lang: str = "zh") -> dict:
 
 def export_anki_csv() -> bytes:
     """把词表导成 Anki 能吃的 CSV（带 BOM，Excel 不乱码）。"""
-    text = read_notes(NOTES_PATH)
-    rows = []
-    for block in re.split(r"(?m)^## ", text)[1:]:
-        lines = [l for l in block.strip().splitlines() if l.strip()]
-        if not lines:
-            continue
-        word = lines[0].strip()
-
-        # 释义只取「第一条列表项之前」的内容；碰到 - **音标** 或  - 例句 就停，
-        # 否则例句会被整段塞进释义列
-        head_lines = []
-        for line in lines[1:]:
-            if line.strip().startswith("- "):
-                break
-            head_lines.append(line.strip())
-        meaning = " ".join(head_lines).strip()
-
-        rows.append([_csv_safe(word), _csv_safe(meaning)])
+    rows = [[_csv_safe(w), _csv_safe(m)] for w, m in parse_entries(read_notes(NOTES_PATH))]
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(["单词", "释义"])
@@ -649,8 +679,8 @@ def default_notes_path() -> str:
     if not desk or not os.path.isdir(desk):
         desk = os.path.join(os.path.expanduser("~"), "Desktop")
     if not os.path.isdir(desk):
-        return os.path.join(HERE, "词表.md")
-    return os.path.join(desk, "词表.md")
+        return os.path.join(HERE, "词表.txt")
+    return os.path.join(desk, "词表.txt")
 
 
 NOTES_PATH = default_notes_path()
@@ -732,13 +762,6 @@ LABELS = {
         "none": "(no definition from the dictionary)",
     },
 }
-
-HEADERS = {
-    "zh": "# 生词本\n\n> 一行单词，一行词性和意思。\n\n",
-    "en": "# Wordbook\n\n> One line for the word, one for its part of speech and meaning.\n\n",
-}
-
-HEADER = HEADERS["zh"]      # 兼容旧代码与测试
 
 # 给前端用的错误文案（英文界面下不要弹中文）
 MESSAGES = {
@@ -1140,6 +1163,8 @@ def main() -> None:
 
     if args.file:
         NOTES_PATH = os.path.abspath(args.file)
+
+    migrate_legacy_md(NOTES_PATH)
 
     for stream in (sys.stdout, sys.stderr):
         try:
