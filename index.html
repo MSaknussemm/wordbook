@@ -285,7 +285,7 @@
       save: "记下", saved: "已在词表里", saving: "写入中…", savedOk: "已收录",
       note: "写入 词表.txt，两行一条", undo: "撤销上一条",
       loading: "正在查「{0}」…", cancel: "取消",
-      errTitle: "没查到「{0}」", errTimeout: "查询超时或被取消（上限 20 秒）",
+      errTitle: "没查到「{0}」", errTimeout: "查询超时或被取消（上限 30 秒）",
       errOffline: "本地服务没响应：{0}",
       settingsTitle: "记录设置",
       settingsHint: "只影响以后「记下」的词条，已经记好的不会改动。「中文释义」和「英文原义」都关掉的话，词条只剩单词一行。",
@@ -311,7 +311,7 @@
       save: "Keep", saved: "Already saved", saving: "Saving…", savedOk: "Saved",
       note: "Written to 词表.txt", undo: "Undo",
       loading: "Looking up “{0}”…", cancel: "Cancel",
-      errTitle: "Not found: “{0}”", errTimeout: "Timed out or cancelled (20 s limit)",
+      errTitle: "Not found: “{0}”", errTimeout: "Timed out or cancelled (30 s limit)",
       errOffline: "Local service did not respond: {0}",
       settingsTitle: "Entry settings",
       settingsHint: "Only affects entries you save from now on. Turning off both Chinese and English leaves just the word.",
@@ -526,7 +526,7 @@
     inflight = controller;
     busy = true;
     renderLoading(word, controller);
-    const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, 20000);
+    const timer = setTimeout(() => { try { controller.abort(); } catch (e) {} }, 30000);
 
     try {
       const resp = await fetch(api("/api/lookup?word=" + encodeURIComponent(word)), {

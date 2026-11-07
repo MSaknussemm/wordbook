@@ -13,6 +13,7 @@ import sys
 import tempfile
 import types
 import unittest
+import urllib.error
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -118,6 +119,16 @@ class TestFormat(unittest.TestCase):
         self.assertEqual(out.splitlines()[1], "意外发现美好事物的运气，机缘巧合")
 
 
+    def test_template_with_blank_line_is_collapsed(self):
+        out = wordbook.format_entry(PAYLOAD, {"fields": {}, "template": "{{word}}\n\n{{zh}}"})
+        self.assertEqual(len(wordbook.parse_entries(out)), 1, "空行会被当成分隔符，必须压掉")
+        self.assertNotIn("\n\n", out.strip())
+
+    def test_sanitize_block(self):
+        self.assertEqual(wordbook._sanitize_block("a\n\n\nb\n"), "a\nb")
+        self.assertEqual(wordbook._sanitize_block("\n\na\nb\n\n"), "a\nb")
+
+
 class TestParse(unittest.TestCase):
     def test_parse_entries(self):
         text = "run\nv. 跑\n\nserendipity\nn. 意外发现\n\n"
@@ -193,6 +204,29 @@ class TestUndo(unittest.TestCase):
             self.assertIn("manual", body)
             self.assertIn("lucid", body)
 
+    def test_undo_works_when_separator_was_added(self):
+        """保存时补过一个空行，撤销仍要能对上（基线是正文起点，不是补行之前）。"""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.txt")
+            head = "run\nv. 跑"
+            prefix = "\n"
+            block = "apple\nn. 苹果\n\n"
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(head + prefix + block)
+            wordbook._UNDO.clear()
+            wordbook._UNDO.update({
+                "path": path,
+                "size": len((head + prefix).encode("utf-8")),
+                "word": "apple",
+                "block": block,
+                "after": os.path.getsize(path),
+            })
+            result = wordbook.undo_last()
+            self.assertTrue(result["ok"])
+            with open(path, encoding="utf-8") as fh:
+                # 撤销回到「本条正文起点」，也就是补的那个空行之后
+                self.assertEqual(fh.read(), head + prefix)
+
     def test_undo_without_state(self):
         wordbook._UNDO.clear()
         self.assertFalse(wordbook.undo_last()["ok"])
@@ -225,6 +259,31 @@ class TestMigration(unittest.TestCase):
             wordbook.migrate_legacy_md(txt)
             with open(txt, encoding="utf-8") as fh:
                 self.assertIn("new", fh.read())
+
+
+class TestLookupErrors(unittest.TestCase):
+    """网络炸了不等于「词典没收录」——两者要能区分。"""
+
+    def setUp(self):
+        wordbook._cache.clear()
+        self._real = wordbook.fetch_json
+
+    def tearDown(self):
+        wordbook.fetch_json = self._real
+        wordbook._cache.clear()
+
+    def test_network_failure_is_not_not_found(self):
+        def boom(url, timeout=0):
+            raise urllib.error.URLError("simulated")
+        wordbook.fetch_json = boom
+        with self.assertRaises(wordbook.LookupNetworkError):
+            wordbook.lookup("zzznetonly")
+
+    def test_empty_results_are_not_found(self):
+        wordbook.fetch_json = lambda url, timeout=0: {}
+        with self.assertRaises(LookupError) as ctx:
+            wordbook.lookup("zzzmissonly")
+        self.assertNotIsInstance(ctx.exception, wordbook.LookupNetworkError)
 
 
 class TestSameSite(unittest.TestCase):

@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 import argparse
 import csv
@@ -59,7 +59,7 @@ WORD_RE = re.compile(r"^[A-Za-z][A-Za-z'\- ]{0,47}$")
 TAG_RE = re.compile(r"<[^>]+>")
 WS_RE = re.compile(r"\s+")
 
-NET_TIMEOUT = 12
+NET_TIMEOUT = 10      # 每个词典最多等 10 秒；两个源最坏 20 秒，前端给 30 秒
 CACHE_TTL = 900  # 秒；同一个词 15 分钟内不重复打接口
 
 _lock = threading.Lock()
@@ -333,6 +333,10 @@ def lookup_wiktionary(word: str):
 # 合并 / 缓存
 # --------------------------------------------------------------------------
 
+class LookupNetworkError(LookupError):
+    """两个词典都是网络层失败——这跟「词典里没有这个词」是两回事。"""
+
+
 def lookup(word: str) -> dict:
     word = normalize_word(word)
     now = time.time()
@@ -342,6 +346,7 @@ def lookup(word: str) -> dict:
 
     errors = []
     payload = None
+    net_failed = False
 
     try:
         payload = lookup_youdao(word)
@@ -349,6 +354,7 @@ def lookup(word: str) -> dict:
         errors.append(f"有道 HTTP {exc.code}")
     except (urllib.error.URLError, socket.timeout, TimeoutError):
         errors.append("有道连接失败")
+        net_failed = True
     except Exception as exc:  # 解析崩了也要能降级
         errors.append(f"有道异常 {type(exc).__name__}")
 
@@ -359,11 +365,14 @@ def lookup(word: str) -> dict:
             errors.append(f"wiktionary HTTP {exc.code}")
         except (urllib.error.URLError, socket.timeout, TimeoutError):
             errors.append("wiktionary 连接失败")
+            net_failed = True
         except Exception as exc:
             errors.append(f"wiktionary 异常 {type(exc).__name__}")
 
     if payload is None:
         detail = "、".join(errors) if errors else "两个词典都没收录"
+        if net_failed:
+            raise LookupNetworkError(detail)   # 网络问题，别冤枉这个词
         raise LookupError(detail)
 
     payload["word"] = payload.get("word") or word
@@ -431,6 +440,16 @@ def _examples_text(payload: dict, limit: int = 3) -> str:
     return "\n".join(out)
 
 
+def _sanitize_block(block: str) -> str:
+    """词条内部不能有空行——空行是词条之间的分隔符。
+
+    自定义模板里写 `{{word}}\n\n{{zh}}` 这种，会把一条拆成两条，
+    导致数量、导出、判重全乱。这里把内部空行压掉。
+    """
+    lines = [line.rstrip() for line in block.strip().splitlines()]
+    return "\n".join([line for line in lines if line.strip()])
+
+
 def format_entry(payload: dict, cfg: dict | None = None, lang: str = "zh") -> str:
     """生成一条纯文本词条：第一行单词，第二行「词性 意思」，后面按需追加。
 
@@ -473,7 +492,7 @@ def format_entry(payload: dict, cfg: dict | None = None, lang: str = "zh") -> st
         first = block.splitlines()[0].strip() if block else ""
         if normalize_word(first) != normalize_word(word):
             block = word + (("\n" + block) if block else "")
-        return block + "\n\n"
+        return _sanitize_block(block) + "\n\n"
 
     head = ""
     if fields.get("zh", True):
@@ -502,7 +521,7 @@ def format_entry(payload: dict, cfg: dict | None = None, lang: str = "zh") -> st
         lines.append(f"{lab['web']}：{web}")
     if fields.get("time"):
         lines.append(f"{lab['time']}：{stamp}")
-    return "\n".join(lines) + "\n\n"
+    return _sanitize_block("\n".join(lines)) + "\n\n"
 
 
 
@@ -582,24 +601,32 @@ def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
 
         new_file = not os.path.exists(path)
         size_before = 0 if new_file else os.path.getsize(path)
+
+        # 补的分隔空行必须先算出来，撤销的基准点是「正文起点」，
+        # 否则刚写完就撤不掉（尾部是 "\n" + block，跟 block 对不上）
+        prefix = ""
+        if not new_file:
+            existing = read_notes(path)
+            if existing.strip():
+                if not existing.endswith("\n"):
+                    prefix = "\n\n"
+                elif not existing.endswith("\n\n"):
+                    prefix = "\n"
+
         with open(path, "a", encoding="utf-8", newline="\n") as fh:
-            if not new_file:
-                existing = read_notes(path)
-                if existing.strip():
-                    if not existing.endswith("\n"):
-                        fh.write("\n\n")          # 上一条没换行收尾，补个空行
-                    elif not existing.endswith("\n\n"):
-                        fh.write("\n")            # 只有单个换行，补成空行
+            if prefix:
+                fh.write(prefix)
             fh.write(block)
 
+        block_start = size_before + len(prefix.encode("utf-8"))
         count = len(parse_entries(read_notes(path)))
         _cache.pop(word, None)   # 缓存里还留着 saved=False，不失效会让界面反复横跳
 
-        # 记住写之前/之后的长度和写进去的那一段：撤销时三者都要对得上才敢动
+        # 记住正文起点、写完后的长度和那一段内容：撤销时三者都要对得上
         _UNDO.clear()
         _UNDO.update({
             "path": path,
-            "size": size_before,
+            "size": block_start,
             "word": word,
             "block": block,
             "after": os.path.getsize(path),
@@ -785,6 +812,7 @@ MESSAGES = {
         "empty": "先输入一个单词",
         "bad_word": "只认单词或短语，别塞奇怪字符",
         "not_found": "两个词典都没收录",
+        "net_error": "连不上词典（网络问题，不是这个词的问题）",
         "cross_site": "拒绝跨站请求",
         "no_api": "没这个接口",
         "bad_json": "请求体不是 JSON",
@@ -801,6 +829,7 @@ MESSAGES = {
         "empty": "Type a word first",
         "bad_word": "Only words or short phrases, please",
         "not_found": "Neither dictionary has this word",
+        "net_error": "Could not reach the dictionaries (network issue, not the word)",
         "cross_site": "Cross-site request rejected",
         "no_api": "No such endpoint",
         "bad_json": "Request body is not JSON",
@@ -952,6 +981,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         route = parsed.path
 
+        # 读接口也要守 Host：/api/export-anki 能把整份词表吐出来，
+        # 只防写入不防读取，等于门锁了窗没关。
+        if route.startswith("/api/") and not self._same_site():
+            self._json(403, {"ok": False, "code": "cross_site",
+                             "error": message("cross_site", "zh")})
+            return
+
         if route in ("/", "/index.html"):
             try:
                 with open(INDEX_HTML, "rb") as fh:
@@ -1003,6 +1039,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 payload = lookup(word)
+            except LookupNetworkError as exc:
+                self._json(502, {"ok": False, "code": "net_error",
+                                 "error": message("net_error", lang), "detail": str(exc)})
+                return
             except LookupError as exc:
                 self._json(404, {"ok": False, "code": "not_found",
                                  "error": message("not_found", lang), "detail": str(exc)})
@@ -1039,7 +1079,7 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _same_site(self) -> bool:
-        """挡跨站 POST，也挡 DNS rebinding：Host 必须字面是本机。"""
+        """挡跨站与 DNS rebinding：Host 必须字面是本机。"""
         port = self.server.server_port
         host = (self.headers.get("Host") or "").strip().lower()
         # Host 是请求方自己带来的，不能拿它当比较基准——evil.com 解析到 127.0.0.1 后，
@@ -1127,6 +1167,9 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             self._json(200, save_word(word, lang=lang))
+        except LookupNetworkError as exc:
+            self._json(502, {"ok": False, "code": "net_error",
+                             "error": message("net_error", lang), "detail": str(exc)})
         except LookupError as exc:
             self._json(404, {"ok": False, "code": "not_found",
                              "error": message("not_found", lang), "detail": str(exc)})
