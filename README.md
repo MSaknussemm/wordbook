@@ -4,6 +4,8 @@
 
 *A local-first English → Chinese vocabulary notebook for Windows. Zero dependencies, no account, no cloud.*
 
+**简体中文** | [English](README.en.md)
+
 [![CI](https://github.com/MSaknussemm/wordbook/actions/workflows/ci.yml/badge.svg)](https://github.com/MSaknussemm/wordbook/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -185,6 +187,15 @@ wordbook/
 - **依赖非官方接口**，随时可能失效；失效时会退到 Wiktionary（只有英文）。
 - `pick_port` 只在 8765~8784 之间找端口；全被占会直接报错。
 - 「最近查过」存在浏览器 `localStorage`，换浏览器或清缓存会丢。
+
+## 相关文档
+
+- [使用说明.md](使用说明.md) —— 面向使用者的完整操作说明
+- [README.en.md](README.en.md) —— English
+- [CONTRIBUTING.md](CONTRIBUTING.md) —— 怎么贡献、代码约定
+- [SECURITY.md](SECURITY.md) —— 安全策略与漏洞报告
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) —— 行为准则
+- [CHANGELOG.md](CHANGELOG.md) —— 更新日志
 
 ## License
 
