@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """wordbook.py —— 本地生词本
 
-左侧输入英文单词 -> 右侧显示「词性 + 意思」-> 点「记下」追加到桌面上的 词表.md。
+左侧输入英文单词 -> 右侧显示「词性 + 意思」-> 点「记下」追加到桌面上的 词表.txt。
 
 只用 Python 3 标准库。日常由 启动词本.vbs 无窗口拉起：
     - 真实端口写进 %LOCALAPPDATA%\\Wordbook\\port.txt，启动器读它打开页面
@@ -16,6 +16,7 @@ __version__ = "1.4.2"
 
 import argparse
 import csv
+import errno
 import io
 import json
 import os
@@ -672,33 +673,43 @@ def is_saved(word: str, path: str | None = None) -> bool:
 def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
     word = normalize_word(word)
     with _lock:
+        require_existing = not path and _CUSTOM_NOTES_ACTIVE
         path = path or NOTES_PATH
-        if is_saved(word, path):
-            return {"ok": True, "duplicate": True, "path": path}
+        if require_existing and not os.path.isfile(path):
+            return {"ok": False, "code": "notes_missing", "error": message("notes_missing", lang)}
+        try:
+            if is_saved(word, path):
+                return {"ok": True, "duplicate": True, "path": path}
 
-        payload = lookup(word)
-        block = format_entry(payload, load_config(), lang=lang)
+            payload = lookup(word)
+            block = format_entry(payload, load_config(), lang=lang)
 
-        new_file = not os.path.exists(path)
-        if not new_file and ensure_utf8(path):
-            print("词表原来是 GBK 编码，已转成 UTF-8（旧文件备份为 .bak）")
-        size_before = 0 if new_file else os.path.getsize(path)
+            new_file = not os.path.exists(path)
+            if not new_file and ensure_utf8(path):
+                print("词表原来是 GBK 编码，已转成 UTF-8（旧文件备份为 .bak）")
+            size_before = 0 if new_file else os.path.getsize(path)
 
-        # 补的分隔空行必须先算出来，撤销的基准点是「正文起点」，
-        # 否则刚写完就撤不掉（尾部是 "\n" + block，跟 block 对不上）
-        prefix = ""
-        if not new_file:
-            existing = read_notes(path)
-            if existing.strip():
-                if not existing.endswith("\n"):
-                    prefix = "\n\n"
-                elif not existing.endswith("\n\n"):
-                    prefix = "\n"
+            # 撤销的基准点是正文起点，需要先算出分隔空行。
+            prefix = ""
+            if not new_file:
+                existing = read_notes(path)
+                if existing.strip():
+                    if not existing.endswith("\n"):
+                        prefix = "\n\n"
+                    elif not existing.endswith("\n\n"):
+                        prefix = "\n"
 
-        with open(path, "a", encoding="utf-8", newline="\n") as fh:
-            if prefix:
-                fh.write(prefix)
-            fh.write(block)
+            def open_notes(filename, flags):
+                if require_existing:
+                    flags &= ~os.O_CREAT
+                return os.open(filename, flags)
+
+            with open(path, "a", encoding="utf-8", newline="\n", opener=open_notes) as fh:
+                fh.write(prefix + block)
+        except FileNotFoundError:
+            if not require_existing:
+                raise
+            return {"ok": False, "code": "notes_missing", "error": message("notes_missing", lang)}
 
         block_start = size_before + len(prefix.encode("utf-8"))
         count = len(parse_entries(read_notes(path)))
@@ -811,6 +822,7 @@ def default_notes_path() -> str:
 
 NOTES_PATH = default_notes_path()
 _CLI_NOTES_PATH = False
+_CUSTOM_NOTES_ACTIVE = False
 
 # 启动器要按「真实端口」打开页面，而端口可能因为占用而顺延。
 # 与其让 VBS 去扫端口（每次建 COM 对象要几百毫秒），不如后端自己写一张小纸条。
@@ -861,28 +873,31 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    global NOTES_PATH
-    fields = {}
-    for key, default in DEFAULT_FIELDS.items():
-        fields[key] = bool(((cfg.get("fields") or {}).get(key, default)))
-    clean = {
-        "fields": fields,
-        "template": str(cfg.get("template") or ""),
-        "lang": cfg.get("lang") if cfg.get("lang") in ("auto", "zh", "en") else "auto",
-    }
+    global NOTES_PATH, _CUSTOM_NOTES_ACTIVE
     with _lock:
-        previous = load_config()["notes_path"]
-        path = cfg.get("notes_path", previous) if not _CLI_NOTES_PATH else previous
-        if not isinstance(path, str):
-            raise ValueError("Expected a file path")
-        path = path.strip().strip('"')
-        if path != previous and path:
-            if not os.path.isabs(path) or os.path.splitext(path)[1].lower() not in (".txt", ".md"):
-                raise ValueError("Choose an absolute path to a .txt or .md file")
-            if not os.path.isfile(path):
-                raise ValueError("The word list file does not exist")
-            path = os.path.normpath(path)
-        clean["notes_path"] = path
+        clean = load_config()
+        fields = cfg.get("fields")
+        if isinstance(fields, dict):
+            for key in DEFAULT_FIELDS.keys() & fields.keys():
+                clean["fields"][key] = bool(fields[key])
+        if "template" in cfg:
+            clean["template"] = str(cfg["template"] or "")
+        if "lang" in cfg:
+            lang = cfg["lang"]
+            clean["lang"] = lang if lang in ("auto", "zh", "en") else "auto"
+        update_path = "notes_path" in cfg and not _CLI_NOTES_PATH
+        if update_path:
+            path = cfg["notes_path"]
+            if not isinstance(path, str):
+                raise ValueError("Expected a file path")
+            path = path.strip().strip('"')
+            if path:
+                if not os.path.isabs(path) or os.path.splitext(path)[1].lower() not in (".txt", ".md"):
+                    raise ValueError("Choose an absolute path to a .txt or .md file")
+                if not os.path.isfile(path):
+                    raise ValueError("The word list file does not exist")
+                path = os.path.normpath(path)
+            clean["notes_path"] = path
         directory = os.path.dirname(CONFIG_PATH)
         os.makedirs(directory, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as fh:
@@ -894,9 +909,12 @@ def save_config(cfg: dict) -> None:
             finally:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
-        if not _CLI_NOTES_PATH and path != previous:
-            NOTES_PATH = path or default_notes_path()
-            _UNDO.clear()
+        if update_path:
+            active_path = path or default_notes_path()
+            if active_path != NOTES_PATH:
+                _UNDO.clear()
+            NOTES_PATH = active_path
+            _CUSTOM_NOTES_ACTIVE = bool(path)
 
 
 # 撤销只保留「最近一次」，够用又不惹事
@@ -935,6 +953,7 @@ MESSAGES = {
         "undo_gone": "词表文件已经不在了",
         "dup": "这个词已经在词表里了",
         "cfg_failed": "保存设置失败",
+        "notes_missing": "自定义词表文件已找不到。请在「记录设置」中重新选择，或清空路径以使用默认词表。",
     },
     "en": {
         "empty": "Type a word first",
@@ -952,6 +971,7 @@ MESSAGES = {
         "undo_gone": "The notes file is gone",
         "dup": "Already in the word list",
         "cfg_failed": "Could not save settings",
+        "notes_missing": "Your custom word list is missing. Select it again in Settings or clear its path to use the default.",
     },
 }
 
@@ -1049,7 +1069,7 @@ def _idle_watchdog(started: float, port: int) -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Wordbook/1.0"
+    server_version = f"Wordbook/{__version__}"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):  # 控制台只留一行简版
@@ -1124,11 +1144,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/config":
+            config = load_config()
             self._json(200, {
                 "ok": True,
-                "config": load_config(),
+                "config": config,
                 "path": NOTES_PATH,
                 "notes_path_locked": _CLI_NOTES_PATH,
+                "notes_path_fallback": bool(config["notes_path"] and not _CLI_NOTES_PATH
+                                            and not _CUSTOM_NOTES_ACTIVE),
                 "undo_available": bool(_UNDO),   # 刷新页面后按钮还能回来
             })
             return
@@ -1349,26 +1372,24 @@ class Server(ThreadingHTTPServer):
         super().server_bind()
 
 
-def pick_port(preferred: int, tries: int = 20) -> int:
-    for offset in range(tries):
-        port = preferred + offset
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            # 关键：这里绝不能开 SO_REUSEADDR。Windows 上它不是「快速重用」，
-            # 而是允许绑定别人正在监听的端口——探测会把占用中误判成空闲。
-            try:
-                probe.bind(("127.0.0.1", port))
-            except OSError:
-                continue
-        return port
-    raise SystemExit(f"端口 {preferred}~{preferred + tries - 1} 全被占了，换个 --port 吧")
+def bind_server(preferred: int, tries: int = 20) -> Server:
+    for port in range(preferred, min(preferred + tries, 65536)):
+        try:
+            return Server(("127.0.0.1", port), Handler)
+        except OSError as exc:
+            # Windows 的独占端口冲突也可能返回 WSAEACCES。
+            if (exc.errno not in (errno.EADDRINUSE, errno.EACCES)
+                    and getattr(exc, "winerror", None) not in (10013, 10048)):
+                raise
+    raise SystemExit(f"端口 {preferred}~{min(preferred + tries - 1, 65535)} 不可用，换个 --port 吧")
 
 
 def main(on_existing=None, open_browser=None) -> None:
-    global NOTES_PATH, _SERVER, _CLI_NOTES_PATH
+    global NOTES_PATH, _SERVER, _CLI_NOTES_PATH, _CUSTOM_NOTES_ACTIVE
 
     parser = argparse.ArgumentParser(description="本地生词本（左侧查词，右侧释义，记进 Markdown）")
     parser.add_argument("--port", type=int, default=None, help="监听端口，默认 8765；显式指定会跳过单实例保护")
-    parser.add_argument("--file", default=None, help="词表 Markdown 路径，默认是桌面上的 词表.md")
+    parser.add_argument("--file", default=None, help="指定词表路径；默认使用设置里的词表或桌面上的 词表.txt")
     parser.add_argument("--version", action="version", version=f"wordbook {__version__}")
     parser.add_argument("--no-browser", action="store_true", help="别自动开浏览器")
     args = parser.parse_args()
@@ -1384,8 +1405,11 @@ def main(on_existing=None, open_browser=None) -> None:
 
     _CLI_NOTES_PATH = bool(args.file)
     configured_path = load_config()["notes_path"]
-    NOTES_PATH = os.path.abspath(args.file) if args.file else configured_path or default_notes_path()
-    if not configured_path or args.file:
+    _CUSTOM_NOTES_ACTIVE = not _CLI_NOTES_PATH and bool(configured_path and os.path.isfile(configured_path))
+    NOTES_PATH = os.path.abspath(args.file) if args.file else (
+        configured_path if _CUSTOM_NOTES_ACTIVE else default_notes_path()
+    )
+    if not _CUSTOM_NOTES_ACTIVE:
         migrate_legacy_md(NOTES_PATH)
 
     base_port = args.port if args.port is not None else 8765
@@ -1393,9 +1417,11 @@ def main(on_existing=None, open_browser=None) -> None:
     if not os.path.exists(INDEX_HTML):
         raise SystemExit(f"缺少 index.html，得跟 wordbook.py 放一起：{INDEX_HTML}")
 
-    port = pick_port(base_port)
+    if not 0 <= base_port <= 65535:
+        parser.error("--port 必须在 0~65535 之间")
+    httpd = bind_server(base_port)
+    port = httpd.server_port
     url = f"http://127.0.0.1:{port}/"
-    httpd = Server(("127.0.0.1", port), Handler)
     _SERVER = httpd
     _write_port_file(port)
     threading.Thread(target=_idle_watchdog, args=(time.time(), port), daemon=True).start()
@@ -1409,7 +1435,7 @@ def main(on_existing=None, open_browser=None) -> None:
             if open_browser is None:
                 threading.Timer(0.6, lambda: webbrowser.open(url)).start()
             else:
-                open_browser(url)
+                threading.Thread(target=open_browser, args=(url,), daemon=True).start()
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n收到 Ctrl+C，收工。")

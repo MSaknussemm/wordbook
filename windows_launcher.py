@@ -13,10 +13,21 @@ import wordbook
 
 
 LOG_PATH = Path(wordbook.PORT_FILE).with_name("startup.log")
+INSTANCE_READY_TIMEOUT = 30
+
+
+def open_browser(url):
+    try:
+        os.startfile(url)
+    except OSError:
+        message = ("无法打开默认浏览器，请在浏览器中访问下方地址。\n"
+                   "Could not open the default browser. Open this address manually.\n\n"
+                   f"{url}")
+        ctypes.windll.user32.MessageBoxW(None, message, "Wordbook · 生词本", 0x30)
 
 
 def reopen_running_instance():
-    deadline = time.monotonic() + 8
+    deadline = time.monotonic() + INSTANCE_READY_TIMEOUT
     while time.monotonic() < deadline:
         try:
             port = int(Path(wordbook.PORT_FILE).read_text(encoding="utf-8"))
@@ -32,7 +43,7 @@ def reopen_running_instance():
         except (OSError, ValueError, http.client.HTTPException):
             info = {}
         if isinstance(info, dict) and info.get("app") == "wordbook" and info.get("ok") is True:
-            os.startfile(f"http://127.0.0.1:{port}/")
+            open_browser(f"http://127.0.0.1:{port}/")
             return
         time.sleep(0.15)
     raise RuntimeError("找不到正在运行的生词本，请退出旧版窗口后重试。")
@@ -40,7 +51,7 @@ def reopen_running_instance():
 
 def run():
     try:
-        wordbook.main(on_existing=reopen_running_instance, open_browser=os.startfile)
+        wordbook.main(on_existing=reopen_running_instance, open_browser=open_browser)
     except (Exception, SystemExit) as exc:
         if isinstance(exc, SystemExit) and exc.code in (0, None):
             return 0

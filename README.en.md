@@ -55,6 +55,8 @@ No account, no sync, no spaced repetition, no recommendations. Just a lookup box
 
 To reuse a custom word list, paste the full path to an existing `.txt` or `.md` file in Settings. Run a newer installer to upgrade. Uninstalling keeps your word list and settings.
 
+If your custom file is missing at startup, the page shows the default word list in use. If the custom file disappears while Wordbook is running, saving prompts you to choose a file again.
+
 ## Run from source
 
 Running from source requires Windows and Python 3.10+. The app uses the Python standard library.
@@ -176,7 +178,7 @@ CI runs Python 3.10 / 3.11 / 3.12 on `windows-latest`. See [CONTRIBUTING.md](CON
 
 - **Windows only.** Cross-platform support would require rewriting the launcher and the port-exclusivity logic.
 - **Depends on an unofficial endpoint**; when it breaks, the fallback is English-only.
-- `pick_port` only scans 8765–8784.
+- By default, Wordbook tries ports 8765–8784 and reports when none can be bound.
 - "Recent lookups" live in `localStorage` and are lost when you clear the browser.
 
 ## License

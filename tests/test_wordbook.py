@@ -6,19 +6,22 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import pathlib
-import socket
 import sys
 import tempfile
 import types
 import unittest
 import urllib.error
+from unittest.mock import Mock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import wordbook  # noqa: E402
+import windows_launcher  # noqa: E402
 
 PAYLOAD = {
     "word": "serendipity",
@@ -420,18 +423,19 @@ class TestSameSite(unittest.TestCase):
 
 
 class TestPort(unittest.TestCase):
-    def test_pick_port_skips_occupied(self):
-        probe = socket.socket()
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind(("127.0.0.1", 18910))
-        probe.listen(1)
-        try:
-            self.assertNotEqual(wordbook.pick_port(18910), 18910)
-        finally:
-            probe.close()
+    def test_bind_server_skips_occupied_and_keeps_socket(self):
+        with wordbook.Server(("127.0.0.1", 18910), wordbook.Handler):
+            with wordbook.bind_server(18910) as server:
+                self.assertGreater(server.server_port, 18910)
+                with self.assertRaises(OSError):
+                    wordbook.Server(server.server_address, wordbook.Handler)
 
-    def test_pick_port_returns_free_port(self):
-        self.assertEqual(wordbook.pick_port(18920), 18920)
+    def test_bind_server_accepts_os_assigned_port(self):
+        with wordbook.bind_server(0) as server:
+            self.assertGreater(server.server_port, 0)
+
+    def test_http_version_matches_application_version(self):
+        self.assertEqual(wordbook.Handler.server_version, f"Wordbook/{wordbook.__version__}")
 
     @unittest.skipUnless(os.name == "nt", "Windows 的独占绑定语义")
     def test_second_server_cannot_bind(self):
@@ -472,6 +476,154 @@ class TestConfig(unittest.TestCase):
                 self.assertEqual(parsed["lang"], "en")
             finally:
                 wordbook.CONFIG_PATH = old
+
+
+class TestCustomNotes(unittest.TestCase):
+    def setUp(self):
+        self.directory = pathlib.Path(self.enter_patch(tempfile.TemporaryDirectory()))
+        self.custom = self.directory / "已有词表.md"
+        self.custom.write_text("existing\nExisting definition\n", encoding="utf-8")
+        self.default = self.directory / "词表.txt"
+        self.enter_patch(patch.multiple(
+            wordbook, CONFIG_PATH=str(self.directory / "config.json"),
+            NOTES_PATH=str(self.default), _CLI_NOTES_PATH=False, _CUSTOM_NOTES_ACTIVE=False,
+            _SERVER=None, _UNDO={},
+        ))
+        self.enter_patch(patch.object(wordbook, "default_notes_path", return_value=str(self.default)))
+
+    def enter_patch(self, context):
+        value = context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+        return value
+
+    def start(self, *args):
+        with patch.object(sys, "argv", ["wordbook.py", "--port", "0", "--no-browser", *args]), \
+                patch.object(wordbook, "bind_server", return_value=Mock(server_port=12345)), \
+                patch.object(wordbook, "_write_port_file"), patch.object(wordbook.threading, "Thread"):
+            wordbook.main()
+
+    def config_response(self, payload=None):
+        handler = object.__new__(wordbook.Handler)
+        handler.path = "/api/config"
+        handler.server = types.SimpleNamespace(server_port=12345)
+        handler.headers = {"Host": "127.0.0.1:12345"}
+        handler._json = Mock()
+        if payload is None:
+            handler.do_GET()
+        else:
+            body = json.dumps(payload).encode("utf-8")
+            handler.headers["Content-Length"] = str(len(body))
+            handler.rfile = io.BytesIO(body)
+            handler.do_POST()
+        self.assertEqual(handler._json.call_args.args[0], 200)
+        return handler._json.call_args.args[1]
+
+    def test_partial_settings_preserve_unsubmitted_values(self):
+        wordbook.save_config({"fields": {"web": True, "zh": False}, "template": "{{word}} -- {{zh}}", "lang": "en"})
+        self.config_response({"notes_path": str(self.custom)})
+        wordbook.save_config({"fields": {"en": True}})
+        config = wordbook.load_config()
+        self.assertEqual(config["notes_path"], str(self.custom))
+        self.assertEqual(config["template"], "{{word}} -- {{zh}}")
+        self.assertEqual(config["lang"], "en")
+        self.assertTrue(config["fields"]["web"])
+        self.assertTrue(config["fields"]["en"])
+        self.assertFalse(config["fields"]["zh"])
+
+    def test_existing_custom_file_is_selected_at_startup(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+        self.start()
+        response = self.config_response()
+        self.assertEqual(response["path"], str(self.custom))
+        self.assertFalse(response["notes_path_locked"])
+        self.assertFalse(response["notes_path_fallback"])
+
+    def test_missing_at_startup_uses_default_and_preserves_selection(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+        self.custom.unlink()
+        self.start()
+        response = self.config_response()
+        self.assertTrue(response["notes_path_fallback"])
+        self.assertEqual(response["path"], str(self.default))
+        self.assertEqual(response["config"]["notes_path"], str(self.custom))
+        with patch.object(wordbook, "lookup", return_value=PAYLOAD):
+            self.assertTrue(wordbook.save_word("serendipity")["ok"])
+        self.assertTrue(self.default.is_file())
+        self.assertFalse(self.custom.exists())
+
+    def test_file_restored_after_fallback_can_be_selected_again(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+        self.custom.unlink()
+        self.start()
+        self.custom.touch()
+        wordbook.save_config({"notes_path": str(self.custom)})
+        self.assertEqual(wordbook.NOTES_PATH, str(self.custom))
+        self.assertFalse(self.config_response()["notes_path_fallback"])
+
+    def test_missing_during_lookup_is_not_recreated(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+
+        def disconnect(_word):
+            self.custom.unlink()
+            return PAYLOAD
+
+        with patch.object(wordbook, "lookup", side_effect=disconnect) as lookup:
+            self.assertEqual(wordbook.save_word("serendipity")["code"], "notes_missing")
+            self.assertEqual(wordbook.save_word("serendipity")["code"], "notes_missing")
+            lookup.assert_called_once()
+        self.assertFalse(self.custom.exists())
+        self.assertFalse(self.default.exists())
+
+    def test_missing_parent_at_runtime_prompts_reselection(self):
+        folder = self.directory / "removable"
+        folder.mkdir()
+        file = folder / "words.txt"
+        file.touch()
+        wordbook.save_config({"notes_path": str(file)})
+        file.unlink()
+        folder.rmdir()
+        self.assertEqual(wordbook.save_word("serendipity")["code"], "notes_missing")
+
+    def test_cli_override_locks_path_without_changing_selection(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+        cli_file = self.directory / "CLI.txt"
+        self.start("--file", str(cli_file))
+        wordbook.save_config({"notes_path": "", "lang": "en"})
+        response = self.config_response()
+        self.assertTrue(response["notes_path_locked"])
+        self.assertFalse(response["notes_path_fallback"])
+        self.assertEqual(response["path"], str(cli_file))
+        self.assertEqual(response["config"]["notes_path"], str(self.custom))
+        self.assertEqual(response["config"]["lang"], "en")
+
+
+class TestInstalledStartup(unittest.TestCase):
+    def test_frozen_default_without_desktop_uses_state_directory(self):
+        with patch.object(sys, "frozen", True, create=True), \
+                patch.dict(os.environ, {"LOCALAPPDATA": r"C:\TestState"}), \
+                patch.object(os.path, "isdir", return_value=False):
+            self.assertEqual(wordbook.default_notes_path(),
+                             os.path.join(r"C:\TestState", "Wordbook", "词表.txt"))
+
+    def test_secondary_launcher_waits_past_previous_eight_second_limit(self):
+        port = Mock()
+        port.read_text.side_effect = [FileNotFoundError(), "8765"]
+        connection = Mock()
+        connection.getresponse.return_value.status = 200
+        connection.getresponse.return_value.read.return_value = b'{"ok":true,"app":"wordbook"}'
+        with patch.object(windows_launcher, "Path", return_value=port), \
+                patch.object(windows_launcher.time, "monotonic", side_effect=[0, 0, 9]), \
+                patch.object(windows_launcher.time, "sleep"), \
+                patch.object(windows_launcher.http.client, "HTTPConnection", return_value=connection), \
+                patch.object(windows_launcher, "open_browser") as launch:
+            windows_launcher.reopen_running_instance()
+        launch.assert_called_once_with("http://127.0.0.1:8765/")
+
+    def test_missing_default_browser_reports_manual_address(self):
+        with patch.object(windows_launcher.os, "startfile", side_effect=OSError, create=True), \
+                patch.object(windows_launcher.ctypes, "windll", create=True) as windll:
+            windows_launcher.open_browser("http://127.0.0.1:8765/")
+        self.assertIn("http://127.0.0.1:8765/", windll.user32.MessageBoxW.call_args.args[1])
 
 
 class TestI18n(unittest.TestCase):

@@ -234,6 +234,7 @@
     </form>
 
     <p class="hint" data-i18n="hint">只显示单词和「词性 + 意思」；要留档就点右侧「记下」。</p>
+    <p class="hint" id="notesFallback" role="status" hidden></p>
 
     <div class="recent">
       <h2 data-i18n="recent">最近查过</h2>
@@ -321,6 +322,7 @@
       errOffline: "本地服务没响应：{0}",
       settingsTitle: "记录设置",
       notesPathLabel: "已有词表路径（留空使用桌面的词表）",
+      notesPathFallback: "找不到原来的自定义词表。当前使用默认词表：{0}。可在「记录设置」中重新选择。",
       settingsHint: "只影响以后「记下」的词条，已经记好的不会改动。「中文释义」和「英文原义」都关掉的话，词条只剩单词一行。",
       langLabel: "界面语言", langAuto: "跟随系统",
       presetMin: "极简", presetCard: "学习卡", presetFull: "全量",
@@ -353,6 +355,7 @@
       errOffline: "Local service did not respond: {0}",
       settingsTitle: "Entry settings",
       notesPathLabel: "Path to an existing word list (blank uses your desktop)",
+      notesPathFallback: "Your custom word list could not be found. Using the default at {0}. Choose a file in Settings to switch back.",
       settingsHint: "Only affects entries you save from now on. Turning off both Chinese and English leaves just the word.",
       langLabel: "Interface language", langAuto: "Follow system",
       presetMin: "Minimal", presetCard: "Study card", presetFull: "Everything",
@@ -392,6 +395,9 @@
       if (key === "langAuto") { node.textContent = t("langAuto"); return; }
       node.textContent = t(key);
     });
+    const fallback = $("notesFallback");
+    fallback.hidden = !fallbackNotesPath;
+    fallback.textContent = fallbackNotesPath ? t("notesPathFallback", fallbackNotesPath) : "";
     renderFields();
     if (current) render(current);
     else if (!card.hidden) { /* 错误/加载态：保持原样 */ }
@@ -416,6 +422,8 @@
   let inflight = null;
   let lookupSeq = 0;
   let cfg = { fields: { pos: true, zh: true }, template: "", lang: "auto" };
+  let fallbackNotesPath = "";
+  let notesPathEdited = false;
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);
@@ -688,6 +696,7 @@
       const data = await resp.json();
       if (data.ok) {
         if (data.config) cfg = data.config;
+        fallbackNotesPath = data.notes_path_fallback ? data.path : "";
         $("notesPath").disabled = !!data.notes_path_locked;
         $("notesPath").placeholder = data.path || "";
         if (typeof data.undo_available === "boolean") canUndo = data.undo_available;
@@ -754,12 +763,14 @@
     await loadCfg();
     $("lang").value = cfg.lang || "auto";
     $("notesPath").value = cfg.notes_path || "";
+    notesPathEdited = false;
     renderFields();
     $("template").value = cfg.template || "";
     openSheet();
   });
 
   $("cancelCfg").addEventListener("click", closeSheet);
+  $("notesPath").addEventListener("input", () => { notesPathEdited = true; });
 
   // Tab 不跑出设置窗口
   $("sheet").addEventListener("keydown", (ev) => {
@@ -860,7 +871,8 @@
   $("saveCfg").addEventListener("click", async () => {
     const body = { fields: readFields(), template: $("template").value, lang: $("lang").value };
     const notesPath = $("notesPath");
-    if (!notesPath.disabled && notesPath.value !== (cfg.notes_path || "")) {
+    if (!notesPath.disabled && notesPathEdited &&
+        (fallbackNotesPath || notesPath.value !== (cfg.notes_path || ""))) {
       body.notes_path = notesPath.value;
     }
     try {
@@ -871,7 +883,7 @@
       });
       const data = await resp.json();
       if (!data.ok) { toast(data.error || t("cfgFailed", "")); return; }
-      if ((cfg.notes_path || "") !== (data.config.notes_path || "")) {
+      if ("notes_path" in body || (cfg.notes_path || "") !== (data.config.notes_path || "")) {
         store(SAVED_KEY, []);
         location.reload();
         return;
