@@ -56,6 +56,7 @@ No account, no sync, no spaced repetition, no recommendations. Just a lookup box
 To reuse a custom word list, paste the full path to an existing `.txt` or `.md` file in Settings. Run a newer installer to upgrade. Uninstalling keeps your word list and settings.
 
 If your custom file is missing at startup, the page shows the default word list in use. If the custom file disappears while Wordbook is running, saving prompts you to choose a file again.
+Selecting an older heading-based Markdown word list imports a plain-text copy alongside it and keeps the original and any existing text file.
 
 ## Run from source
 

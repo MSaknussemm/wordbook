@@ -18,6 +18,7 @@ import argparse
 import csv
 import errno
 import io
+import itertools
 import json
 import os
 import re
@@ -563,35 +564,81 @@ def format_entry(payload: dict, cfg: dict | None = None, lang: str = "zh") -> st
 
 
 
+def legacy_notes_to_plain(text: str) -> str | None:
+    """转换旧版标题式词表，也保留 1.4.2 已追加的纯文本块。"""
+    text = text.lstrip()
+    has_title = bool(re.match(r"^# (?:生词本|Wordbook)(?:\n|$)", text))
+    if not has_title and not re.match(r"^##[ \t]+\S", text):
+        return None
+    sections = re.split(r"(?m)^##[ \t]+([^\n]+)\n?", text)
+    entries = [
+        block for block in re.split(r"\n[^\S\n]*\n", sections[0].strip())
+        if WORD_RE.fullmatch(block.split("\n", 1)[0].strip())
+    ]
+    for word, section in zip(sections[1::2], sections[2::2]):
+        blocks = re.split(r"\n[^\S\n]*\n", section.strip())
+        lines = blocks[0].splitlines()
+        appended = []
+        for block in blocks[1:]:
+            first_line = block.split("\n", 1)[0].strip()
+            if WORD_RE.fullmatch(first_line):
+                appended.append(block.strip())
+            else:
+                lines.extend(block.splitlines())
+        body = []
+        pos = ""
+        definition = ""
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            m = re.match(r"^-\s+\*\*(.+?)\*\*\s*[：:](.*)$", stripped)
+            if m:
+                label, value = m.groups()
+                if label in ("词性", "Part of speech"):
+                    pos = value.strip()
+                elif label in ("中文", "释义", "Chinese", "Definition"):
+                    definition = value.strip()
+                else:
+                    body.append(f"{label}：{value}")
+            elif stripped.startswith("- "):
+                body.append("  " + stripped[2:])
+            else:
+                body.append(stripped)
+        meaning = " ".join(part for part in (pos, definition) if part)
+        if meaning:
+            body.insert(0, meaning)
+        entries.append("\n".join([word.strip(), *body]))
+        entries.extend(appended)
+    return "\n\n".join(entries) + ("\n" if entries else "")
+
+
+def copy_legacy_notes(path: str, converted: str) -> str:
+    stem = os.path.splitext(path)[0]
+    for index in itertools.count():
+        suffix = f" - imported ({index})" if index else ""
+        destination = stem + suffix + ".txt"
+        try:
+            with open(destination, "x", encoding="utf-8", newline="\n") as fh:
+                fh.write(converted)
+        except FileExistsError:
+            continue
+        return destination
+
+
 def migrate_legacy_md(txt_path: str) -> None:
     """把旧的 词表.md 迁成 词表.txt（一次性；原文件改名为 .bak 留着）。"""
     md_path = os.path.splitext(txt_path)[0] + ".md"
     if os.path.exists(txt_path) or not os.path.exists(md_path):
         return
-
-    text = read_notes(md_path)
-    entries = []
-    for block in re.split(r"(?m)^##\s+", text)[1:]:
-        lines = [line.rstrip() for line in block.splitlines() if line.strip()]
-        if not lines:
-            continue
-        word = lines[0].strip()
-        body = []
-        for line in lines[1:]:
-            stripped = line.strip()
-            m = re.match(r"^-\s+\*\*(.+?)\*\*：(.*)$", stripped)
-            if m:
-                body.append(f"{m.group(1)}：{m.group(2)}")
-            elif stripped.startswith("- "):
-                body.append("  " + stripped[2:])
-            else:
-                body.append(stripped)
-        entries.append(word + (("\n" + "\n".join(body)) if body else ""))
-
-    if not entries:
+    converted = legacy_notes_to_plain(read_notes(md_path))
+    if not converted:
         return
-    with open(txt_path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("\n\n".join(entries) + "\n")
+    try:
+        with open(txt_path, "x", encoding="utf-8", newline="\n") as fh:
+            fh.write(converted)
+    except FileExistsError:
+        return
     try:
         os.replace(md_path, md_path + ".bak")
     except OSError:
@@ -654,7 +701,9 @@ def read_notes(path: str) -> str:
 def parse_entries(text: str) -> list[tuple[str, str]]:
     """纯文本词表：空行分块，第一行是单词，第二行是释义。"""
     entries = []
-    for block in re.split(r"\n\s*\n", (text or "").strip()):
+    text = text or ""
+    converted = legacy_notes_to_plain(text)
+    for block in re.split(r"\n\s*\n", (text if converted is None else converted).strip()):
         lines = [line.strip() for line in block.splitlines() if line.strip()]
         if not lines:
             continue
@@ -678,21 +727,26 @@ def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
         if require_existing and not os.path.isfile(path):
             return {"ok": False, "code": "notes_missing", "error": message("notes_missing", lang)}
         try:
-            if is_saved(word, path):
+            existing = read_notes(path)
+            if any(normalize_word(saved) == word for saved, _ in parse_entries(existing)):
                 return {"ok": True, "duplicate": True, "path": path}
+            if legacy_notes_to_plain(existing) is not None:
+                return {"ok": False, "code": "notes_legacy", "error": message("notes_legacy", lang)}
 
             payload = lookup(word)
             block = format_entry(payload, load_config(), lang=lang)
 
             new_file = not os.path.exists(path)
-            if not new_file and ensure_utf8(path):
-                print("词表原来是 GBK 编码，已转成 UTF-8（旧文件备份为 .bak）")
-            size_before = 0 if new_file else os.path.getsize(path)
-
             # 撤销的基准点是正文起点，需要先算出分隔空行。
+            size_before = 0
             prefix = ""
             if not new_file:
                 existing = read_notes(path)
+                if legacy_notes_to_plain(existing) is not None:
+                    return {"ok": False, "code": "notes_legacy", "error": message("notes_legacy", lang)}
+                if ensure_utf8(path):
+                    print("词表原来是 GBK 编码，已转成 UTF-8（旧文件备份为 .bak）")
+                size_before = os.path.getsize(path)
                 if existing.strip():
                     if not existing.endswith("\n"):
                         prefix = "\n\n"
@@ -897,6 +951,9 @@ def save_config(cfg: dict) -> None:
                 if not os.path.isfile(path):
                     raise ValueError("The word list file does not exist")
                 path = os.path.normpath(path)
+                converted = legacy_notes_to_plain(read_notes(path))
+                if converted is not None:
+                    path = copy_legacy_notes(path, converted)
             clean["notes_path"] = path
         directory = os.path.dirname(CONFIG_PATH)
         os.makedirs(directory, exist_ok=True)
@@ -954,6 +1011,7 @@ MESSAGES = {
         "dup": "这个词已经在词表里了",
         "cfg_failed": "保存设置失败",
         "notes_missing": "自定义词表文件已找不到。请在「记录设置」中重新选择，或清空路径以使用默认词表。",
+        "notes_legacy": "当前词表是旧版 Markdown。请在「记录设置」中选择此文件并保存，导入纯文本副本后即可继续记录。",
     },
     "en": {
         "empty": "Type a word first",
@@ -972,6 +1030,7 @@ MESSAGES = {
         "dup": "Already in the word list",
         "cfg_failed": "Could not save settings",
         "notes_missing": "Your custom word list is missing. Select it again in Settings or clear its path to use the default.",
+        "notes_legacy": "This is an older Markdown word list. Select it in Settings and save to import a plain-text copy before adding words.",
     },
 }
 
@@ -1145,6 +1204,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if route == "/api/config":
             config = load_config()
+            legacy = False
+            if _CUSTOM_NOTES_ACTIVE:
+                try:
+                    legacy = legacy_notes_to_plain(read_notes(NOTES_PATH)) is not None
+                except OSError:
+                    pass
             self._json(200, {
                 "ok": True,
                 "config": config,
@@ -1152,6 +1217,7 @@ class Handler(BaseHTTPRequestHandler):
                 "notes_path_locked": _CLI_NOTES_PATH,
                 "notes_path_fallback": bool(config["notes_path"] and not _CLI_NOTES_PATH
                                             and not _CUSTOM_NOTES_ACTIVE),
+                "notes_path_legacy": legacy,
                 "undo_available": bool(_UNDO),   # 刷新页面后按钮还能回来
             })
             return

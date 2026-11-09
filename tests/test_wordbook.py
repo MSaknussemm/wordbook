@@ -479,6 +479,12 @@ class TestConfig(unittest.TestCase):
 
 
 class TestCustomNotes(unittest.TestCase):
+    LEGACY = (
+        "# 生词本\n\n> 说明\n\n"
+        "## run\n\n- **词性**：v.\n- **中文**：跑\n\n"
+        "## apple\n- **词性**：n.\n- **中文**：苹果\n"
+    )
+
     def setUp(self):
         self.directory = pathlib.Path(self.enter_patch(tempfile.TemporaryDirectory()))
         self.custom = self.directory / "已有词表.md"
@@ -537,6 +543,45 @@ class TestCustomNotes(unittest.TestCase):
         self.assertEqual(response["path"], str(self.custom))
         self.assertFalse(response["notes_path_locked"])
         self.assertFalse(response["notes_path_fallback"])
+
+    def test_import_legacy_markdown_keeps_source_and_existing_txt(self):
+        source = self.LEGACY.encode("utf-8")
+        self.custom.write_bytes(source)
+        sibling = self.custom.with_suffix(".txt")
+        sibling.write_bytes(b"other\nDo not overwrite\n")
+
+        response = self.config_response({"notes_path": str(self.custom)})
+        imported = pathlib.Path(response["config"]["notes_path"])
+        self.assertEqual(imported.parent, self.custom.parent)
+        self.assertNotEqual(imported, sibling)
+        self.assertEqual(self.custom.read_bytes(), source)
+        self.assertEqual(sibling.read_bytes(), b"other\nDo not overwrite\n")
+        self.assertEqual(wordbook.NOTES_PATH, str(imported))
+        self.assertEqual(wordbook.parse_entries(imported.read_text(encoding="utf-8")),
+                         [("run", "v. 跑"), ("apple", "n. 苹果")])
+        self.assertIn("run,v. 跑", wordbook.export_anki_csv().decode("utf-8-sig"))
+        self.assertNotIn("##", wordbook.export_anki_csv().decode("utf-8-sig"))
+        with patch.object(wordbook, "lookup", return_value=PAYLOAD) as lookup:
+            self.assertTrue(wordbook.save_word("run")["duplicate"])
+            self.assertTrue(wordbook.save_word("apple")["duplicate"])
+            lookup.assert_not_called()
+            self.assertEqual(wordbook.save_word("serendipity")["count"], 3)
+        self.assertEqual(self.custom.read_bytes(), source)
+
+    def test_previous_legacy_selection_is_readable_but_cannot_be_appended_to(self):
+        source = (self.LEGACY + "\nserendipity\nn. 偶然发现\n").encode("utf-8")
+        self.custom.write_bytes(source)
+        pathlib.Path(wordbook.CONFIG_PATH).write_text(
+            json.dumps({"notes_path": str(self.custom)}), encoding="utf-8")
+        self.start()
+        self.assertTrue(self.config_response()["notes_path_legacy"])
+        self.assertTrue(wordbook.is_saved("run"))
+        self.assertTrue(wordbook.is_saved("serendipity"))
+        self.assertEqual(wordbook.save_word("new")["code"], "notes_legacy")
+        self.assertEqual(self.custom.read_bytes(), source)
+        self.config_response({"notes_path": str(self.custom)})
+        self.assertEqual(len(wordbook.parse_entries(wordbook.read_notes(wordbook.NOTES_PATH))), 3)
+        self.assertFalse(self.config_response()["notes_path_legacy"])
 
     def test_missing_at_startup_uses_default_and_preserves_selection(self):
         wordbook.save_config({"notes_path": str(self.custom)})

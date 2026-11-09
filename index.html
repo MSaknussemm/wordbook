@@ -323,6 +323,7 @@
       settingsTitle: "记录设置",
       notesPathLabel: "已有词表路径（留空使用桌面的词表）",
       notesPathFallback: "找不到原来的自定义词表。当前使用默认词表：{0}。可在「记录设置」中重新选择。",
+      notesPathLegacy: "当前词表是旧版 Markdown。打开「记录设置」并保存，即可导入纯文本副本，原文件会保留。",
       settingsHint: "只影响以后「记下」的词条，已经记好的不会改动。「中文释义」和「英文原义」都关掉的话，词条只剩单词一行。",
       langLabel: "界面语言", langAuto: "跟随系统",
       presetMin: "极简", presetCard: "学习卡", presetFull: "全量",
@@ -356,6 +357,7 @@
       settingsTitle: "Entry settings",
       notesPathLabel: "Path to an existing word list (blank uses your desktop)",
       notesPathFallback: "Your custom word list could not be found. Using the default at {0}. Choose a file in Settings to switch back.",
+      notesPathLegacy: "This word list uses an older Markdown format. Open Settings and save to import a plain-text copy and keep the original.",
       settingsHint: "Only affects entries you save from now on. Turning off both Chinese and English leaves just the word.",
       langLabel: "Interface language", langAuto: "Follow system",
       presetMin: "Minimal", presetCard: "Study card", presetFull: "Everything",
@@ -396,8 +398,8 @@
       node.textContent = t(key);
     });
     const fallback = $("notesFallback");
-    fallback.hidden = !fallbackNotesPath;
-    fallback.textContent = fallbackNotesPath ? t("notesPathFallback", fallbackNotesPath) : "";
+    fallback.hidden = !fallbackNotesPath && !legacyNotesPath;
+    fallback.textContent = fallbackNotesPath ? t("notesPathFallback", fallbackNotesPath) : t("notesPathLegacy");
     renderFields();
     if (current) render(current);
     else if (!card.hidden) { /* 错误/加载态：保持原样 */ }
@@ -423,6 +425,7 @@
   let lookupSeq = 0;
   let cfg = { fields: { pos: true, zh: true }, template: "", lang: "auto" };
   let fallbackNotesPath = "";
+  let legacyNotesPath = false;
   let notesPathEdited = false;
 
   function el(tag, cls, text) {
@@ -697,6 +700,7 @@
       if (data.ok) {
         if (data.config) cfg = data.config;
         fallbackNotesPath = data.notes_path_fallback ? data.path : "";
+        legacyNotesPath = !!data.notes_path_legacy;
         $("notesPath").disabled = !!data.notes_path_locked;
         $("notesPath").placeholder = data.path || "";
         if (typeof data.undo_available === "boolean") canUndo = data.undo_available;
@@ -871,8 +875,8 @@
   $("saveCfg").addEventListener("click", async () => {
     const body = { fields: readFields(), template: $("template").value, lang: $("lang").value };
     const notesPath = $("notesPath");
-    if (!notesPath.disabled && notesPathEdited &&
-        (fallbackNotesPath || notesPath.value !== (cfg.notes_path || ""))) {
+    if (!notesPath.disabled && (legacyNotesPath || (notesPathEdited &&
+        (fallbackNotesPath || notesPath.value !== (cfg.notes_path || ""))))) {
       body.notes_path = notesPath.value;
     }
     try {
