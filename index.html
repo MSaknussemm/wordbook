@@ -271,6 +271,11 @@
       </select>
     </label>
 
+    <label class="tpl">
+      <span data-i18n="notesPathLabel">已有词表路径（留空使用桌面的词表）</span>
+      <input id="notesPath" type="text" spellcheck="false" style="width:100%">
+    </label>
+
     <div class="presets">
       <button data-preset="min" type="button" data-i18n="presetMin">极简</button>
       <button data-preset="card" type="button" data-i18n="presetCard">学习卡</button>
@@ -315,6 +320,7 @@
       errTitle: "没查到「{0}」", errTimeout: "查询超时或被取消（上限 30 秒）",
       errOffline: "本地服务没响应：{0}",
       settingsTitle: "记录设置",
+      notesPathLabel: "已有词表路径（留空使用桌面的词表）",
       settingsHint: "只影响以后「记下」的词条，已经记好的不会改动。「中文释义」和「英文原义」都关掉的话，词条只剩单词一行。",
       langLabel: "界面语言", langAuto: "跟随系统",
       presetMin: "极简", presetCard: "学习卡", presetFull: "全量",
@@ -346,6 +352,7 @@
       errTitle: "Not found: “{0}”", errTimeout: "Timed out or cancelled (30 s limit)",
       errOffline: "Local service did not respond: {0}",
       settingsTitle: "Entry settings",
+      notesPathLabel: "Path to an existing word list (blank uses your desktop)",
       settingsHint: "Only affects entries you save from now on. Turning off both Chinese and English leaves just the word.",
       langLabel: "Interface language", langAuto: "Follow system",
       presetMin: "Minimal", presetCard: "Study card", presetFull: "Everything",
@@ -681,6 +688,8 @@
       const data = await resp.json();
       if (data.ok) {
         if (data.config) cfg = data.config;
+        $("notesPath").disabled = !!data.notes_path_locked;
+        $("notesPath").placeholder = data.path || "";
         if (typeof data.undo_available === "boolean") canUndo = data.undo_available;
       }
     } catch (e) {}
@@ -744,6 +753,7 @@
   $("settings").addEventListener("click", async () => {
     await loadCfg();
     $("lang").value = cfg.lang || "auto";
+    $("notesPath").value = cfg.notes_path || "";
     renderFields();
     $("template").value = cfg.template || "";
     openSheet();
@@ -849,6 +859,10 @@
 
   $("saveCfg").addEventListener("click", async () => {
     const body = { fields: readFields(), template: $("template").value, lang: $("lang").value };
+    const notesPath = $("notesPath");
+    if (!notesPath.disabled && notesPath.value !== (cfg.notes_path || "")) {
+      body.notes_path = notesPath.value;
+    }
     try {
       const resp = await fetch(api("/api/config"), {
         method: "POST",
@@ -857,6 +871,11 @@
       });
       const data = await resp.json();
       if (!data.ok) { toast(data.error || t("cfgFailed", "")); return; }
+      if ((cfg.notes_path || "") !== (data.config.notes_path || "")) {
+        store(SAVED_KEY, []);
+        location.reload();
+        return;
+      }
       cfg = data.config;
       LANG = effectiveLang();
       applyI18n();

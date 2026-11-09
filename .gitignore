@@ -5,3 +5,4 @@ port.txt
 config.json
 .DS_Store
 Thumbs.db
+/build/

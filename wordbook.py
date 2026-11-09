@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 import argparse
 import csv
@@ -23,6 +23,7 @@ import re
 import shutil
 import socket
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -669,9 +670,9 @@ def is_saved(word: str, path: str | None = None) -> bool:
 
 
 def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
-    path = path or NOTES_PATH
     word = normalize_word(word)
     with _lock:
+        path = path or NOTES_PATH
         if is_saved(word, path):
             return {"ok": True, "duplicate": True, "path": path}
 
@@ -803,11 +804,13 @@ def default_notes_path() -> str:
     if not desk or not os.path.isdir(desk):
         desk = os.path.join(os.path.expanduser("~"), "Desktop")
     if not os.path.isdir(desk):
-        return os.path.join(HERE, "词表.txt")
+        state_dir = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Wordbook")
+        return os.path.join(state_dir if getattr(sys, "frozen", False) else HERE, "词表.txt")
     return os.path.join(desk, "词表.txt")
 
 
 NOTES_PATH = default_notes_path()
+_CLI_NOTES_PATH = False
 
 # 启动器要按「真实端口」打开页面，而端口可能因为占用而顺延。
 # 与其让 VBS 去扫端口（每次建 COM 对象要几百毫秒），不如后端自己写一张小纸条。
@@ -831,7 +834,7 @@ DEFAULT_FIELDS = {
     "time": False,
 }
 
-DEFAULT_CONFIG = {"fields": dict(DEFAULT_FIELDS), "template": "", "lang": "auto"}
+DEFAULT_CONFIG = {"fields": dict(DEFAULT_FIELDS), "template": "", "lang": "auto", "notes_path": ""}
 
 
 def load_config() -> dict:
@@ -852,10 +855,13 @@ def load_config() -> dict:
         cfg["template"] = data["template"]
     if data.get("lang") in ("auto", "zh", "en"):
         cfg["lang"] = data["lang"]
+    if isinstance(data.get("notes_path"), str):
+        cfg["notes_path"] = data["notes_path"]
     return cfg
 
 
 def save_config(cfg: dict) -> None:
+    global NOTES_PATH
     fields = {}
     for key, default in DEFAULT_FIELDS.items():
         fields[key] = bool(((cfg.get("fields") or {}).get(key, default)))
@@ -864,9 +870,33 @@ def save_config(cfg: dict) -> None:
         "template": str(cfg.get("template") or ""),
         "lang": cfg.get("lang") if cfg.get("lang") in ("auto", "zh", "en") else "auto",
     }
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-        json.dump(clean, fh, ensure_ascii=False, indent=2)
+    with _lock:
+        previous = load_config()["notes_path"]
+        path = cfg.get("notes_path", previous) if not _CLI_NOTES_PATH else previous
+        if not isinstance(path, str):
+            raise ValueError("Expected a file path")
+        path = path.strip().strip('"')
+        if path != previous and path:
+            if not os.path.isabs(path) or os.path.splitext(path)[1].lower() not in (".txt", ".md"):
+                raise ValueError("Choose an absolute path to a .txt or .md file")
+            if not os.path.isfile(path):
+                raise ValueError("The word list file does not exist")
+            path = os.path.normpath(path)
+        clean["notes_path"] = path
+        directory = os.path.dirname(CONFIG_PATH)
+        os.makedirs(directory, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as fh:
+            temp_path = fh.name
+            try:
+                json.dump(clean, fh, ensure_ascii=False, indent=2)
+                fh.close()
+                os.replace(temp_path, CONFIG_PATH)
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+        if not _CLI_NOTES_PATH and path != previous:
+            NOTES_PATH = path or default_notes_path()
+            _UNDO.clear()
 
 
 # 撤销只保留「最近一次」，够用又不惹事
@@ -1098,6 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "config": load_config(),
                 "path": NOTES_PATH,
+                "notes_path_locked": _CLI_NOTES_PATH,
                 "undo_available": bool(_UNDO),   # 刷新页面后按钮还能回来
             })
             return
@@ -1247,7 +1278,7 @@ class Handler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 self._json(400, {"ok": False, "code": "bad_json", "error": message("bad_json", lang)})
                 return
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 self._json(500, {"ok": False, "code": "cfg_failed",
                                  "error": f"{message('cfg_failed', lang)}: {exc}"})
                 return
@@ -1332,8 +1363,8 @@ def pick_port(preferred: int, tries: int = 20) -> int:
     raise SystemExit(f"端口 {preferred}~{preferred + tries - 1} 全被占了，换个 --port 吧")
 
 
-def main() -> None:
-    global NOTES_PATH, _SERVER
+def main(on_existing=None, open_browser=None) -> None:
+    global NOTES_PATH, _SERVER, _CLI_NOTES_PATH
 
     parser = argparse.ArgumentParser(description="本地生词本（左侧查词，右侧释义，记进 Markdown）")
     parser.add_argument("--port", type=int, default=None, help="监听端口，默认 8765；显式指定会跳过单实例保护")
@@ -1342,16 +1373,20 @@ def main() -> None:
     parser.add_argument("--no-browser", action="store_true", help="别自动开浏览器")
     args = parser.parse_args()
 
-    if args.file:
-        NOTES_PATH = os.path.abspath(args.file)
-
-    migrate_legacy_md(NOTES_PATH)
-
     # 常规启动（没显式给端口）只允许一个实例：靠命名互斥体，
     # 不依赖 port.txt 是否存在——那张纸条丢了也不会开出第二份
     if args.port is None and not acquire_single_instance():
+        if on_existing is not None and not args.no_browser:
+            on_existing()
+            return
         print("生词本已经在跑了；要再开一份调试，请加 --port <端口>。")
         return
+
+    _CLI_NOTES_PATH = bool(args.file)
+    configured_path = load_config()["notes_path"]
+    NOTES_PATH = os.path.abspath(args.file) if args.file else configured_path or default_notes_path()
+    if not configured_path or args.file:
+        migrate_legacy_md(NOTES_PATH)
 
     base_port = args.port if args.port is not None else 8765
 
@@ -1369,10 +1404,12 @@ def main() -> None:
     print("词表文件：", NOTES_PATH)
     print("关闭这个窗口（或 Ctrl+C）就停。")
 
-    if not args.no_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
-
     try:
+        if not args.no_browser:
+            if open_browser is None:
+                threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+            else:
+                open_browser(url)
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n收到 Ctrl+C，收工。")

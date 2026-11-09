@@ -6,10 +6,13 @@
 
 **简体中文** | [English](README.en.md)
 
+**[下载 Windows 安装包（64 位）](https://github.com/MSaknussemm/wordbook/releases/latest/download/Wordbook-Setup-x64.exe)**
+· [查看所有版本和预发行版](https://github.com/MSaknussemm/wordbook/releases)
+
 [![CI](https://github.com/MSaknussemm/wordbook/actions/workflows/ci.yml/badge.svg)](https://github.com/MSaknussemm/wordbook/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#环境)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#安装与使用)
 
 | 中文界面 | English UI | 深色 |
 |---|---|---|
@@ -42,13 +45,17 @@
 | **自己会退** | 关掉标签页 15 秒后自动退出，不留孤儿进程 |
 | **本地安全** | 只监听 `127.0.0.1`；POST 校验 `Host` / `Origin` / `Sec-Fetch-Site`，挡跨站与 DNS rebinding |
 
-## 环境
+## 安装与使用
 
-- **Windows 10 / 11**（用到 `winreg`、`SO_EXCLUSIVEADDRUSE`、VBS、PowerShell，不跨平台）
-- **Python 3.10+**（用了 `dict[str, ...]`、`str | None`）
-- **不需要 `pip install` 任何东西**——纯标准库，这是项目的硬约束
+1. 在 Windows 10 或 11（64 位）上双击下载的 `Wordbook-Setup-x64.exe`，按提示安装。安装包内含 Python，可用普通账户安装。
+2. 安装完成后打开生词本。以后在开始菜单搜索 **Wordbook**。安装时也可勾选创建桌面快捷方式。
+3. 输入一个英文单词，按回车查询，再点「记下」。查词需要联网，词表默认保存在桌面的 `词表.txt`。
 
-## 快速开始
+已有自定义词表时，在「记录设置」里粘贴现有 `.txt` 或 `.md` 文件的完整路径并保存。升级可直接运行新版安装包。卸载保留词表和设置。
+
+## 从源码运行
+
+源码运行需要 Windows 和 Python 3.10+，使用 Python 标准库。
 
 ```powershell
 git clone https://github.com/MSaknussemm/wordbook.git

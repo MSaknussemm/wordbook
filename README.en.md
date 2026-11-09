@@ -6,10 +6,13 @@
 
 [简体中文](README.md) | **English**
 
+**[Download the Windows installer (64-bit)](https://github.com/MSaknussemm/wordbook/releases/latest/download/Wordbook-Setup-x64.exe)**
+· [All releases and previews](https://github.com/MSaknussemm/wordbook/releases)
+
 [![CI](https://github.com/MSaknussemm/wordbook/actions/workflows/ci.yml/badge.svg)](https://github.com/MSaknussemm/wordbook/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#requirements)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)](#install-and-use)
 
 | English UI | 中文界面 |
 |---|---|
@@ -44,13 +47,17 @@ No account, no sync, no spaced repetition, no recommendations. Just a lookup box
 | **Self-terminating** | Closes itself ~15 s after you close the tab; no orphan processes |
 | **Local-only** | Binds `127.0.0.1` exclusively; POST endpoints validate `Host` / `Origin` / `Sec-Fetch-Site` against cross-site and DNS-rebinding attacks |
 
-## Requirements
+## Install and use
 
-- **Windows 10 / 11** — uses `winreg`, `SO_EXCLUSIVEADDRUSE`, VBS and PowerShell. Not portable as-is.
-- **Python 3.10+** — uses `dict[str, ...]` and `str | None`.
-- **No `pip install`** — standard library only. This is a hard constraint of the project.
+1. On 64-bit Windows 10 or 11, open `Wordbook-Setup-x64.exe` and follow the prompts. The installer includes Python and works with a standard Windows account.
+2. Launch Wordbook when setup finishes. For later use, search for **Wordbook** in Start or select the optional desktop shortcut during installation.
+3. Enter an English word, press Enter to look it up, then save it. Lookups need internet access. Your word list defaults to `词表.txt` on your desktop.
 
-## Quick start
+To reuse a custom word list, paste the full path to an existing `.txt` or `.md` file in Settings. Run a newer installer to upgrade. Uninstalling keeps your word list and settings.
+
+## Run from source
+
+Running from source requires Windows and Python 3.10+. The app uses the Python standard library.
 
 ```powershell
 git clone https://github.com/MSaknussemm/wordbook.git
