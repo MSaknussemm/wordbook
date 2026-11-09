@@ -1388,7 +1388,7 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(length) if length else b"{}"
                 payload = json.loads(raw.decode("utf-8", "replace") or "{}")
-            except json.JSONDecodeError:
+            except ValueError:
                 self._json(400, {"ok": False, "code": "bad_json", "error": message("bad_json", lang)})
                 return
             try:
