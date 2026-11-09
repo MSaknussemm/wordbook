@@ -668,7 +668,8 @@
       const data = await resp.json();
       if (typeof data.undo_available === "boolean") {
         canUndo = data.undo_available;
-        btn.hidden = !canUndo;
+        const undoButton = $("undoBtn");
+        if (undoButton) undoButton.hidden = !canUndo;
       }
       if (!data.ok) {
         toast(data.error || t("undoFailed", ""));
