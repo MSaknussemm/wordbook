@@ -19,8 +19,8 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           architecture: x64
@@ -40,7 +40,7 @@ jobs:
           $process = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', ('/DIR="' + $compiler + '"') -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Inno Setup installation failed." }
           ./packaging/build.ps1 -Iscc (Join-Path $compiler 'ISCC.exe')
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: Wordbook-Setup-x64
           path: build/installer/Wordbook-Setup-x64.exe
@@ -53,7 +53,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: Wordbook-Setup-x64
       - name: Attach installer to draft release
