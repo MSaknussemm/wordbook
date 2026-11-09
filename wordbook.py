@@ -566,7 +566,7 @@ def format_entry(payload: dict, cfg: dict | None = None, lang: str = "zh") -> st
 
 def legacy_notes_to_plain(text: str) -> str | None:
     """转换旧版标题式词表，也保留 1.4.2 已追加的纯文本块。"""
-    text = text.lstrip()
+    text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip()
     has_title = bool(re.match(r"^# (?:生词本|Wordbook)(?:\n|$)", text))
     if not has_title and not re.match(r"^##[ \t]+\S", text):
         return None
@@ -615,9 +615,9 @@ def legacy_notes_to_plain(text: str) -> str | None:
 
 def copy_legacy_notes(path: str, converted: str) -> str:
     stem = os.path.splitext(path)[0]
-    for index in itertools.count():
-        suffix = f" - imported ({index})" if index else ""
-        destination = stem + suffix + ".txt"
+    for index in itertools.count(1):
+        suffix = f" ({index})" if index > 1 else ""
+        destination = f"{stem} - imported{suffix}.txt"
         try:
             with open(destination, "x", encoding="utf-8", newline="\n") as fh:
                 fh.write(converted)
@@ -686,10 +686,11 @@ def read_notes(path: str) -> str:
     记事本另存为「UTF-8 with BOM」很常见，BOM 会粘在第一个词前面，
     让判重永远认不出第一条——所以先按 utf-8-sig 解（能自动吃掉 BOM）。
     """
-    if not os.path.exists(path):
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
         return ""
-    with open(path, "rb") as fh:
-        raw = fh.read()
     for encoding in ("utf-8-sig", "gbk"):
         try:
             return raw.decode(encoding)
@@ -773,6 +774,7 @@ def save_word(word: str, path: str | None = None, lang: str = "zh") -> dict:
         _UNDO.clear()
         _UNDO.update({
             "path": path,
+            "created": new_file,
             "size": block_start,
             "word": word,
             "block": block,
@@ -815,13 +817,14 @@ def undo_last(lang: str = "zh") -> dict:
             _UNDO.clear()
             return {"ok": False, "code": "undo_mismatch", "error": message("undo_mismatch", lang)}
 
-        _UNDO.clear()
+        created = _UNDO.get("created", False)
         with open(path, "r+b") as fh:
             fh.truncate(size)
+        _UNDO.clear()
 
         # 撤完变成空文件就收掉
         try:
-            if os.path.getsize(path) == 0:
+            if created and os.path.getsize(path) == 0:
                 os.remove(path)
         except OSError:
             pass
@@ -903,14 +906,20 @@ DEFAULT_FIELDS = {
 DEFAULT_CONFIG = {"fields": dict(DEFAULT_FIELDS), "template": "", "lang": "auto", "notes_path": ""}
 
 
-def load_config() -> dict:
+def load_config(*, strict: bool = False) -> dict:
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
+    except FileNotFoundError:
+        return cfg
     except (OSError, ValueError):
+        if strict:
+            raise
         return cfg
     if not isinstance(data, dict):
+        if strict:
+            raise ValueError("Settings must be a JSON object")
         return cfg
     fields = data.get("fields")
     if isinstance(fields, dict):
@@ -929,7 +938,7 @@ def load_config() -> dict:
 def save_config(cfg: dict) -> None:
     global NOTES_PATH, _CUSTOM_NOTES_ACTIVE
     with _lock:
-        clean = load_config()
+        clean = load_config(strict=True)
         fields = cfg.get("fields")
         if isinstance(fields, dict):
             for key in DEFAULT_FIELDS.keys() & fields.keys():
@@ -1010,6 +1019,9 @@ MESSAGES = {
         "undo_gone": "词表文件已经不在了",
         "dup": "这个词已经在词表里了",
         "cfg_failed": "保存设置失败",
+        "cfg_load_failed": "无法读取设置，请检查设置文件后重试。",
+        "export_failed": "无法读取词表。请关闭占用词表的程序后重试导出。",
+        "undo_failed": "无法撤销。请关闭占用词表的程序后重试。",
         "notes_missing": "自定义词表文件已找不到。请在「记录设置」中重新选择，或清空路径以使用默认词表。",
         "notes_legacy": "当前词表是旧版 Markdown。请在「记录设置」中选择此文件并保存，导入纯文本副本后即可继续记录。",
     },
@@ -1029,6 +1041,9 @@ MESSAGES = {
         "undo_gone": "The notes file is gone",
         "dup": "Already in the word list",
         "cfg_failed": "Could not save settings",
+        "cfg_load_failed": "Could not read settings. Check the settings file and try again.",
+        "export_failed": "Could not read the word list. Close any app using it and try exporting again.",
+        "undo_failed": "Could not undo. Close any app using the word list and try again.",
         "notes_missing": "Your custom word list is missing. Select it again in Settings or clear its path to use the default.",
         "notes_legacy": "This is an older Markdown word list. Select it in Settings and save to import a plain-text copy before adding words.",
     },
@@ -1203,7 +1218,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/config":
-            config = load_config()
+            try:
+                config = load_config(strict=True)
+            except (OSError, ValueError):
+                self._json(500, {"ok": False, "code": "cfg_load_failed",
+                                 "error": message("cfg_load_failed", self._lang())})
+                return
             legacy = False
             if _CUSTOM_NOTES_ACTIVE:
                 try:
@@ -1223,7 +1243,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/export-anki":
-            body = export_anki_csv()
+            try:
+                body = export_anki_csv()
+            except OSError:
+                self._json(500, {"ok": False, "code": "export_failed",
+                                 "error": message("export_failed", self._lang())})
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/csv; charset=utf-8")
             self.send_header("Content-Disposition", 'attachment; filename="wordbook-anki.csv"')
@@ -1363,10 +1388,11 @@ class Handler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(length) if length else b"{}"
                 payload = json.loads(raw.decode("utf-8", "replace") or "{}")
-                save_config(payload if isinstance(payload, dict) else {})
             except json.JSONDecodeError:
                 self._json(400, {"ok": False, "code": "bad_json", "error": message("bad_json", lang)})
                 return
+            try:
+                save_config(payload if isinstance(payload, dict) else {})
             except (OSError, ValueError) as exc:
                 self._json(500, {"ok": False, "code": "cfg_failed",
                                  "error": f"{message('cfg_failed', lang)}: {exc}"})
@@ -1375,7 +1401,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if route == "/api/undo":
-            self._json(200, undo_last(self._lang()))
+            lang = self._lang()
+            try:
+                result = undo_last(lang)
+            except OSError:
+                self._json(500, {"ok": False, "code": "undo_failed", "error": message("undo_failed", lang)})
+                return
+            result["undo_available"] = bool(_UNDO)
+            self._json(200, result)
             return
 
         if route == "/api/open-notes":

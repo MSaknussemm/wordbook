@@ -334,6 +334,8 @@
       previewFail: "预览失败：{0}",
       presetCustom: "自定义",
       cfgSaved: "设置已保存，从下一条开始生效", cfgFailed: "保存失败：{0}",
+      cfgLoadFailed: "无法加载设置，请重新打开「记录设置」重试。",
+      exportFailed: "导出失败，请稍后重试。",
       already: "这个词已经在词表里了", dupToast: "之前就记过了，没重复写",
       wrote: "已写入 {0}（共 {1} 条）",
       savedToast: "已记下 · 共 {0} 条",
@@ -368,6 +370,8 @@
       previewFail: "Preview failed: {0}",
       presetCustom: "Custom",
       cfgSaved: "Settings saved; applies to the next entry", cfgFailed: "Could not save: {0}",
+      cfgLoadFailed: "Could not load settings. Open Settings to try again.",
+      exportFailed: "Export failed. Please try again.",
       already: "This word is already saved", dupToast: "Already saved earlier — nothing written",
       wrote: "Wrote to {0} ({1} entries)",
       savedToast: "Saved · {0} entries",
@@ -662,12 +666,14 @@
     try {
       const resp = await fetch(api("/api/undo"), { method: "POST" });
       const data = await resp.json();
+      if (typeof data.undo_available === "boolean") {
+        canUndo = data.undo_available;
+        btn.hidden = !canUndo;
+      }
       if (!data.ok) {
         toast(data.error || t("undoFailed", ""));
         return;
       }
-      canUndo = false;
-      btn.hidden = true;
       toast(t("undoDone", data.word));
       // 撤销后「最近查过」里的已保存标记也要一起清掉，否则刷新后还在骗人
       const saved = new Set(loadStored(SAVED_KEY));
@@ -697,15 +703,21 @@
     try {
       const resp = await fetch(api("/api/config"));
       const data = await resp.json();
-      if (data.ok) {
-        if (data.config) cfg = data.config;
-        fallbackNotesPath = data.notes_path_fallback ? data.path : "";
-        legacyNotesPath = !!data.notes_path_legacy;
-        $("notesPath").disabled = !!data.notes_path_locked;
-        $("notesPath").placeholder = data.path || "";
-        if (typeof data.undo_available === "boolean") canUndo = data.undo_available;
+      if (!resp.ok || !data.ok || !data.config) {
+        toast(data.error || t("cfgLoadFailed"));
+        return false;
       }
-    } catch (e) {}
+      cfg = data.config;
+      fallbackNotesPath = data.notes_path_fallback ? data.path : "";
+      legacyNotesPath = !!data.notes_path_legacy;
+      $("notesPath").disabled = !!data.notes_path_locked;
+      $("notesPath").placeholder = data.path || "";
+      if (typeof data.undo_available === "boolean") canUndo = data.undo_available;
+      return true;
+    } catch (err) {
+      toast(t("cfgLoadFailed"));
+      return false;
+    }
   }
 
   function renderFields() {
@@ -764,7 +776,9 @@
   }
 
   $("settings").addEventListener("click", async () => {
-    await loadCfg();
+    if (!await loadCfg()) return;
+    LANG = effectiveLang();
+    applyI18n();
     $("lang").value = cfg.lang || "auto";
     $("notesPath").value = cfg.notes_path || "";
     notesPathEdited = false;
@@ -912,8 +926,29 @@
     }
   });
 
-  $("exportAnki").addEventListener("click", () => {
-    window.location.href = api("/api/export-anki");
+  $("exportAnki").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const resp = await fetch(api("/api/export-anki"));
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        toast(data.error || t("exportFailed"));
+        return;
+      }
+      const url = URL.createObjectURL(await resp.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "wordbook-anki.csv";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      toast(t("exportFailed"));
+    } finally {
+      button.disabled = false;
+    }
   });
 
   // 内部比较一律用小写：词典可能返回 London，撤销返回 london，严格比较会错位
@@ -958,6 +993,7 @@
 
   // ---------- 启动 ----------
   async function boot() {
+    LANG = effectiveLang();
     await loadCfg();
     LANG = effectiveLang();
     applyI18n();

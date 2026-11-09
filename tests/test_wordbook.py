@@ -208,7 +208,7 @@ class TestUndo(unittest.TestCase):
             fh.write(block)
         wordbook._UNDO.clear()
         wordbook._UNDO.update({
-            "path": path, "size": 0, "word": "lucid", "block": block,
+            "path": path, "size": 0, "word": "lucid", "block": block, "created": True,
             "after": os.path.getsize(path),
         })
         return path
@@ -284,8 +284,9 @@ class TestMigration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             md = os.path.join(d, "词表.md")
             txt = os.path.join(d, "词表.txt")
-            with open(md, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write("# 生词本\n\n> 说明\n\n## run\nv. 跑\n- **音标**：/rʌn/\n\n")
+            pathlib.Path(md).write_bytes(
+                "# 生词本\r\n\r\n> 说明\r\n\r\n## run\r\nv. 跑\r\n- **音标**：/rʌn/\r\n\r\n".encode("utf-8")
+            )
             wordbook.migrate_legacy_md(txt)
             self.assertTrue(os.path.exists(txt))
             with open(txt, encoding="utf-8") as fh:
@@ -508,9 +509,9 @@ class TestCustomNotes(unittest.TestCase):
                 patch.object(wordbook, "_write_port_file"), patch.object(wordbook.threading, "Thread"):
             wordbook.main()
 
-    def config_response(self, payload=None):
+    def api_response(self, path, payload=None):
         handler = object.__new__(wordbook.Handler)
-        handler.path = "/api/config"
+        handler.path = path
         handler.server = types.SimpleNamespace(server_port=12345)
         handler.headers = {"Host": "127.0.0.1:12345"}
         handler._json = Mock()
@@ -521,8 +522,12 @@ class TestCustomNotes(unittest.TestCase):
             handler.headers["Content-Length"] = str(len(body))
             handler.rfile = io.BytesIO(body)
             handler.do_POST()
-        self.assertEqual(handler._json.call_args.args[0], 200)
-        return handler._json.call_args.args[1]
+        return handler._json.call_args.args
+
+    def config_response(self, payload=None):
+        status, body = self.api_response("/api/config", payload)
+        self.assertEqual(status, 200)
+        return body
 
     def test_partial_settings_preserve_unsubmitted_values(self):
         wordbook.save_config({"fields": {"web": True, "zh": False}, "template": "{{word}} -- {{zh}}", "lang": "en"})
@@ -545,17 +550,20 @@ class TestCustomNotes(unittest.TestCase):
         self.assertFalse(response["notes_path_fallback"])
 
     def test_import_legacy_markdown_keeps_source_and_existing_txt(self):
-        source = self.LEGACY.encode("utf-8")
+        source = self.LEGACY.replace("\n", "\r\n").encode("utf-8")
         self.custom.write_bytes(source)
         sibling = self.custom.with_suffix(".txt")
         sibling.write_bytes(b"other\nDo not overwrite\n")
+        first_import = self.custom.with_name(self.custom.stem + " - imported.txt")
+        first_import.write_bytes(b"previous\nDo not overwrite\n")
 
         response = self.config_response({"notes_path": str(self.custom)})
         imported = pathlib.Path(response["config"]["notes_path"])
         self.assertEqual(imported.parent, self.custom.parent)
-        self.assertNotEqual(imported, sibling)
+        self.assertEqual(imported.name, self.custom.stem + " - imported (2).txt")
         self.assertEqual(self.custom.read_bytes(), source)
         self.assertEqual(sibling.read_bytes(), b"other\nDo not overwrite\n")
+        self.assertEqual(first_import.read_bytes(), b"previous\nDo not overwrite\n")
         self.assertEqual(wordbook.NOTES_PATH, str(imported))
         self.assertEqual(wordbook.parse_entries(imported.read_text(encoding="utf-8")),
                          [("run", "v. 跑"), ("apple", "n. 苹果")])
@@ -569,7 +577,7 @@ class TestCustomNotes(unittest.TestCase):
         self.assertEqual(self.custom.read_bytes(), source)
 
     def test_previous_legacy_selection_is_readable_but_cannot_be_appended_to(self):
-        source = (self.LEGACY + "\nserendipity\nn. 偶然发现\n").encode("utf-8")
+        source = (self.LEGACY + "\nrun\nv. 跑\n\nserendipity\nn. 偶然发现\n").replace("\n", "\r\n").encode("utf-8")
         self.custom.write_bytes(source)
         pathlib.Path(wordbook.CONFIG_PATH).write_text(
             json.dumps({"notes_path": str(self.custom)}), encoding="utf-8")
@@ -580,8 +588,43 @@ class TestCustomNotes(unittest.TestCase):
         self.assertEqual(wordbook.save_word("new")["code"], "notes_legacy")
         self.assertEqual(self.custom.read_bytes(), source)
         self.config_response({"notes_path": str(self.custom)})
-        self.assertEqual(len(wordbook.parse_entries(wordbook.read_notes(wordbook.NOTES_PATH))), 3)
+        imported = wordbook.parse_entries(wordbook.read_notes(wordbook.NOTES_PATH))
+        self.assertEqual([word for word, _ in imported], ["run", "apple", "run", "serendipity"])
         self.assertFalse(self.config_response()["notes_path_legacy"])
+
+    def test_legacy_conversion_accepts_windows_and_old_mac_line_endings(self):
+        expected = "run\nv. 跑\n\napple\nn. 苹果\n"
+        for newline in ("\n", "\r\n", "\r"):
+            with self.subTest(newline=newline):
+                self.assertEqual(wordbook.legacy_notes_to_plain(self.LEGACY.replace("\n", newline)), expected)
+
+    def test_export_reports_locked_notes_without_disconnecting_client(self):
+        with patch.object(wordbook, "read_notes", side_effect=PermissionError):
+            status, body = self.api_response("/api/export-anki?lang=en")
+        self.assertEqual(status, 500)
+        self.assertEqual(body["code"], "export_failed")
+
+    def test_config_reports_unreadable_settings_and_partial_save_preserves_file(self):
+        path = pathlib.Path(wordbook.CONFIG_PATH)
+        path.write_bytes(b"{invalid JSON")
+        status, body = self.api_response("/api/config")
+        self.assertEqual((status, body["code"]), (500, "cfg_load_failed"))
+        status, body = self.api_response("/api/config", {"lang": "en"})
+        self.assertEqual((status, body["code"]), (500, "cfg_failed"))
+        self.assertEqual(path.read_bytes(), b"{invalid JSON")
+
+    def test_undo_reports_stale_state_and_keeps_existing_empty_custom_file(self):
+        self.custom.write_bytes(b"")
+        wordbook.save_config({"notes_path": str(self.custom)})
+        with patch.object(wordbook, "lookup", return_value=PAYLOAD):
+            wordbook.save_word("serendipity")
+            status, body = self.api_response("/api/undo", {})
+            self.assertEqual((status, body["ok"], body["undo_available"]), (200, True, False))
+            self.assertEqual(self.custom.read_bytes(), b"")
+            wordbook.save_word("serendipity")
+        self.custom.write_bytes(b"externally edited")
+        status, body = self.api_response("/api/undo", {})
+        self.assertEqual((status, body["code"], body["undo_available"]), (200, "undo_changed", False))
 
     def test_missing_at_startup_uses_default_and_preserves_selection(self):
         wordbook.save_config({"notes_path": str(self.custom)})
