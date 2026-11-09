@@ -6,19 +6,22 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import pathlib
-import socket
 import sys
 import tempfile
 import types
 import unittest
 import urllib.error
+from unittest.mock import Mock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import wordbook  # noqa: E402
+import windows_launcher  # noqa: E402
 
 PAYLOAD = {
     "word": "serendipity",
@@ -205,7 +208,7 @@ class TestUndo(unittest.TestCase):
             fh.write(block)
         wordbook._UNDO.clear()
         wordbook._UNDO.update({
-            "path": path, "size": 0, "word": "lucid", "block": block,
+            "path": path, "size": 0, "word": "lucid", "block": block, "created": True,
             "after": os.path.getsize(path),
         })
         return path
@@ -281,8 +284,9 @@ class TestMigration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             md = os.path.join(d, "词表.md")
             txt = os.path.join(d, "词表.txt")
-            with open(md, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write("# 生词本\n\n> 说明\n\n## run\nv. 跑\n- **音标**：/rʌn/\n\n")
+            pathlib.Path(md).write_bytes(
+                "# 生词本\r\n\r\n> 说明\r\n\r\n## run\r\nv. 跑\r\n- **音标**：/rʌn/\r\n\r\n".encode("utf-8")
+            )
             wordbook.migrate_legacy_md(txt)
             self.assertTrue(os.path.exists(txt))
             with open(txt, encoding="utf-8") as fh:
@@ -420,18 +424,19 @@ class TestSameSite(unittest.TestCase):
 
 
 class TestPort(unittest.TestCase):
-    def test_pick_port_skips_occupied(self):
-        probe = socket.socket()
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        probe.bind(("127.0.0.1", 18910))
-        probe.listen(1)
-        try:
-            self.assertNotEqual(wordbook.pick_port(18910), 18910)
-        finally:
-            probe.close()
+    def test_bind_server_skips_occupied_and_keeps_socket(self):
+        with wordbook.Server(("127.0.0.1", 18910), wordbook.Handler):
+            with wordbook.bind_server(18910) as server:
+                self.assertGreater(server.server_port, 18910)
+                with self.assertRaises(OSError):
+                    wordbook.Server(server.server_address, wordbook.Handler)
 
-    def test_pick_port_returns_free_port(self):
-        self.assertEqual(wordbook.pick_port(18920), 18920)
+    def test_bind_server_accepts_os_assigned_port(self):
+        with wordbook.bind_server(0) as server:
+            self.assertGreater(server.server_port, 0)
+
+    def test_http_version_matches_application_version(self):
+        self.assertEqual(wordbook.Handler.server_version, f"Wordbook/{wordbook.__version__}")
 
     @unittest.skipUnless(os.name == "nt", "Windows 的独占绑定语义")
     def test_second_server_cannot_bind(self):
@@ -472,6 +477,241 @@ class TestConfig(unittest.TestCase):
                 self.assertEqual(parsed["lang"], "en")
             finally:
                 wordbook.CONFIG_PATH = old
+
+
+class TestCustomNotes(unittest.TestCase):
+    LEGACY = (
+        "# 生词本\n\n> 说明\n\n"
+        "## run\n\n- **词性**：v.\n- **中文**：跑\n\n"
+        "## apple\n- **词性**：n.\n- **中文**：苹果\n"
+    )
+
+    def setUp(self):
+        self.directory = pathlib.Path(self.enter_patch(tempfile.TemporaryDirectory()))
+        self.custom = self.directory / "已有词表.md"
+        self.custom.write_text("existing\nExisting definition\n", encoding="utf-8")
+        self.default = self.directory / "词表.txt"
+        self.enter_patch(patch.multiple(
+            wordbook, CONFIG_PATH=str(self.directory / "config.json"),
+            NOTES_PATH=str(self.default), _CLI_NOTES_PATH=False, _CUSTOM_NOTES_ACTIVE=False,
+            _SERVER=None, _UNDO={},
+        ))
+        self.enter_patch(patch.object(wordbook, "default_notes_path", return_value=str(self.default)))
+
+    def enter_patch(self, context):
+        value = context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+        return value
+
+    def start(self, *args):
+        with patch.object(sys, "argv", ["wordbook.py", "--port", "0", "--no-browser", *args]), \
+                patch.object(wordbook, "bind_server", return_value=Mock(server_port=12345)), \
+                patch.object(wordbook, "_write_port_file"), patch.object(wordbook.threading, "Thread"):
+            wordbook.main()
+
+    def api_response(self, path, payload=None):
+        handler = object.__new__(wordbook.Handler)
+        handler.path = path
+        handler.server = types.SimpleNamespace(server_port=12345)
+        handler.headers = {"Host": "127.0.0.1:12345"}
+        handler._json = Mock()
+        if payload is None:
+            handler.do_GET()
+        else:
+            body = json.dumps(payload).encode("utf-8")
+            handler.headers["Content-Length"] = str(len(body))
+            handler.rfile = io.BytesIO(body)
+            handler.do_POST()
+        return handler._json.call_args.args
+
+    def config_response(self, payload=None):
+        status, body = self.api_response("/api/config", payload)
+        self.assertEqual(status, 200)
+        return body
+
+    def test_partial_settings_preserve_unsubmitted_values(self):
+        wordbook.save_config({"fields": {"web": True, "zh": False}, "template": "{{word}} -- {{zh}}", "lang": "en"})
+        self.config_response({"notes_path": str(self.custom)})
+        wordbook.save_config({"fields": {"en": True}})
+        config = wordbook.load_config()
+        self.assertEqual(config["notes_path"], str(self.custom))
+        self.assertEqual(config["template"], "{{word}} -- {{zh}}")
+        self.assertEqual(config["lang"], "en")
+        self.assertTrue(config["fields"]["web"])
+        self.assertTrue(config["fields"]["en"])
+        self.assertFalse(config["fields"]["zh"])
+
+    def test_existing_custom_file_is_selected_at_startup(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+        self.start()
+        response = self.config_response()
+        self.assertEqual(response["path"], str(self.custom))
+        self.assertFalse(response["notes_path_locked"])
+        self.assertFalse(response["notes_path_fallback"])
+
+    def test_import_legacy_markdown_keeps_source_and_existing_txt(self):
+        source = self.LEGACY.replace("\n", "\r\n").encode("utf-8")
+        self.custom.write_bytes(source)
+        sibling = self.custom.with_suffix(".txt")
+        sibling.write_bytes(b"other\nDo not overwrite\n")
+        first_import = self.custom.with_name(self.custom.stem + " - imported.txt")
+        first_import.write_bytes(b"previous\nDo not overwrite\n")
+
+        response = self.config_response({"notes_path": str(self.custom)})
+        imported = pathlib.Path(response["config"]["notes_path"])
+        self.assertEqual(imported.parent, self.custom.parent)
+        self.assertEqual(imported.name, self.custom.stem + " - imported (2).txt")
+        self.assertEqual(self.custom.read_bytes(), source)
+        self.assertEqual(sibling.read_bytes(), b"other\nDo not overwrite\n")
+        self.assertEqual(first_import.read_bytes(), b"previous\nDo not overwrite\n")
+        self.assertEqual(wordbook.NOTES_PATH, str(imported))
+        self.assertEqual(wordbook.parse_entries(imported.read_text(encoding="utf-8")),
+                         [("run", "v. 跑"), ("apple", "n. 苹果")])
+        self.assertIn("run,v. 跑", wordbook.export_anki_csv().decode("utf-8-sig"))
+        self.assertNotIn("##", wordbook.export_anki_csv().decode("utf-8-sig"))
+        with patch.object(wordbook, "lookup", return_value=PAYLOAD) as lookup:
+            self.assertTrue(wordbook.save_word("run")["duplicate"])
+            self.assertTrue(wordbook.save_word("apple")["duplicate"])
+            lookup.assert_not_called()
+            self.assertEqual(wordbook.save_word("serendipity")["count"], 3)
+        self.assertEqual(self.custom.read_bytes(), source)
+
+    def test_previous_legacy_selection_is_readable_but_cannot_be_appended_to(self):
+        source = (self.LEGACY + "\nrun\nv. 跑\n\nserendipity\nn. 偶然发现\n").replace("\n", "\r\n").encode("utf-8")
+        self.custom.write_bytes(source)
+        pathlib.Path(wordbook.CONFIG_PATH).write_text(
+            json.dumps({"notes_path": str(self.custom)}), encoding="utf-8")
+        self.start()
+        self.assertTrue(self.config_response()["notes_path_legacy"])
+        self.assertTrue(wordbook.is_saved("run"))
+        self.assertTrue(wordbook.is_saved("serendipity"))
+        self.assertEqual(wordbook.save_word("new")["code"], "notes_legacy")
+        self.assertEqual(self.custom.read_bytes(), source)
+        self.config_response({"notes_path": str(self.custom)})
+        imported = wordbook.parse_entries(wordbook.read_notes(wordbook.NOTES_PATH))
+        self.assertEqual([word for word, _ in imported], ["run", "apple", "run", "serendipity"])
+        self.assertFalse(self.config_response()["notes_path_legacy"])
+
+    def test_legacy_conversion_accepts_windows_and_old_mac_line_endings(self):
+        expected = "run\nv. 跑\n\napple\nn. 苹果\n"
+        for newline in ("\n", "\r\n", "\r"):
+            with self.subTest(newline=newline):
+                self.assertEqual(wordbook.legacy_notes_to_plain(self.LEGACY.replace("\n", newline)), expected)
+
+    def test_export_reports_locked_notes_without_disconnecting_client(self):
+        with patch.object(wordbook, "read_notes", side_effect=PermissionError):
+            status, body = self.api_response("/api/export-anki?lang=en")
+        self.assertEqual(status, 500)
+        self.assertEqual(body["code"], "export_failed")
+
+    def test_config_reports_unreadable_settings_and_partial_save_preserves_file(self):
+        path = pathlib.Path(wordbook.CONFIG_PATH)
+        path.write_bytes(b"{invalid JSON")
+        status, body = self.api_response("/api/config")
+        self.assertEqual((status, body["code"]), (500, "cfg_load_failed"))
+        status, body = self.api_response("/api/config", {"lang": "en"})
+        self.assertEqual((status, body["code"]), (500, "cfg_failed"))
+        self.assertEqual(path.read_bytes(), b"{invalid JSON")
+
+    def test_undo_reports_stale_state_and_keeps_existing_empty_custom_file(self):
+        self.custom.write_bytes(b"")
+        wordbook.save_config({"notes_path": str(self.custom)})
+        with patch.object(wordbook, "lookup", return_value=PAYLOAD):
+            wordbook.save_word("serendipity")
+            status, body = self.api_response("/api/undo", {})
+            self.assertEqual((status, body["ok"], body["undo_available"]), (200, True, False))
+            self.assertEqual(self.custom.read_bytes(), b"")
+            wordbook.save_word("serendipity")
+        self.custom.write_bytes(b"externally edited")
+        status, body = self.api_response("/api/undo", {})
+        self.assertEqual((status, body["code"], body["undo_available"]), (200, "undo_changed", False))
+
+    def test_missing_at_startup_uses_default_and_preserves_selection(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+        self.custom.unlink()
+        self.start()
+        response = self.config_response()
+        self.assertTrue(response["notes_path_fallback"])
+        self.assertEqual(response["path"], str(self.default))
+        self.assertEqual(response["config"]["notes_path"], str(self.custom))
+        with patch.object(wordbook, "lookup", return_value=PAYLOAD):
+            self.assertTrue(wordbook.save_word("serendipity")["ok"])
+        self.assertTrue(self.default.is_file())
+        self.assertFalse(self.custom.exists())
+
+    def test_file_restored_after_fallback_can_be_selected_again(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+        self.custom.unlink()
+        self.start()
+        self.custom.touch()
+        wordbook.save_config({"notes_path": str(self.custom)})
+        self.assertEqual(wordbook.NOTES_PATH, str(self.custom))
+        self.assertFalse(self.config_response()["notes_path_fallback"])
+
+    def test_missing_during_lookup_is_not_recreated(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+
+        def disconnect(_word):
+            self.custom.unlink()
+            return PAYLOAD
+
+        with patch.object(wordbook, "lookup", side_effect=disconnect) as lookup:
+            self.assertEqual(wordbook.save_word("serendipity")["code"], "notes_missing")
+            self.assertEqual(wordbook.save_word("serendipity")["code"], "notes_missing")
+            lookup.assert_called_once()
+        self.assertFalse(self.custom.exists())
+        self.assertFalse(self.default.exists())
+
+    def test_missing_parent_at_runtime_prompts_reselection(self):
+        folder = self.directory / "removable"
+        folder.mkdir()
+        file = folder / "words.txt"
+        file.touch()
+        wordbook.save_config({"notes_path": str(file)})
+        file.unlink()
+        folder.rmdir()
+        self.assertEqual(wordbook.save_word("serendipity")["code"], "notes_missing")
+
+    def test_cli_override_locks_path_without_changing_selection(self):
+        wordbook.save_config({"notes_path": str(self.custom)})
+        cli_file = self.directory / "CLI.txt"
+        self.start("--file", str(cli_file))
+        wordbook.save_config({"notes_path": "", "lang": "en"})
+        response = self.config_response()
+        self.assertTrue(response["notes_path_locked"])
+        self.assertFalse(response["notes_path_fallback"])
+        self.assertEqual(response["path"], str(cli_file))
+        self.assertEqual(response["config"]["notes_path"], str(self.custom))
+        self.assertEqual(response["config"]["lang"], "en")
+
+
+class TestInstalledStartup(unittest.TestCase):
+    def test_frozen_default_without_desktop_uses_state_directory(self):
+        with patch.object(sys, "frozen", True, create=True), \
+                patch.dict(os.environ, {"LOCALAPPDATA": r"C:\TestState"}), \
+                patch.object(os.path, "isdir", return_value=False):
+            self.assertEqual(wordbook.default_notes_path(),
+                             os.path.join(r"C:\TestState", "Wordbook", "词表.txt"))
+
+    def test_secondary_launcher_waits_past_previous_eight_second_limit(self):
+        port = Mock()
+        port.read_text.side_effect = [FileNotFoundError(), "8765"]
+        connection = Mock()
+        connection.getresponse.return_value.status = 200
+        connection.getresponse.return_value.read.return_value = b'{"ok":true,"app":"wordbook"}'
+        with patch.object(windows_launcher, "Path", return_value=port), \
+                patch.object(windows_launcher.time, "monotonic", side_effect=[0, 0, 9]), \
+                patch.object(windows_launcher.time, "sleep"), \
+                patch.object(windows_launcher.http.client, "HTTPConnection", return_value=connection), \
+                patch.object(windows_launcher, "open_browser") as launch:
+            windows_launcher.reopen_running_instance()
+        launch.assert_called_once_with("http://127.0.0.1:8765/")
+
+    def test_missing_default_browser_reports_manual_address(self):
+        with patch.object(windows_launcher.os, "startfile", side_effect=OSError, create=True), \
+                patch.object(windows_launcher.ctypes, "windll", create=True) as windll:
+            windows_launcher.open_browser("http://127.0.0.1:8765/")
+        self.assertIn("http://127.0.0.1:8765/", windll.user32.MessageBoxW.call_args.args[1])
 
 
 class TestI18n(unittest.TestCase):

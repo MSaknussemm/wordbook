@@ -56,3 +56,13 @@ docs: 补充 port.txt 说明
 - 不要打包或分发词典数据（项目只做实时查询）
 - 不要提高对上游接口的请求频率，不要绕过限流
 - 不要引入遥测、统计、外部上报
+## 构建 Windows 安装包
+
+在 Windows 上准备 x64 Python 和 Inno Setup 7.1.1，在仓库根目录运行：
+
+```powershell
+python -m pip install pyinstaller==6.22.3
+.\packaging\build.ps1 -Iscc 'C:\path\to\ISCC.exe'
+```
+
+安装包输出到 `build/installer/Wordbook-Setup-x64.exe`。GitHub Actions 的 **Windows installer** 工作流可手动构建供测试的安装包。推送与程序版本一致的标签后，它会将安装包附到 Release 草稿，审核后可先作为预发行版发布。
